@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:HomeLens}",
+            "name": "Debug HomeLens",
+            "target": "HomeLens",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug HomeLens"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:HomeLens}",
+            "name": "Release HomeLens",
+            "target": "HomeLens",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release HomeLens"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:HomeLens}",
+            "name": "Debug homelensctl",
+            "target": "homelensctl",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug homelensctl"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:HomeLens}",
+            "name": "Release homelensctl",
+            "target": "homelensctl",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release homelensctl"
+        }
+    ]
+}

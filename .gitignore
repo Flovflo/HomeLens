@@ -1,0 +1,19 @@
+# Build artifacts
+.build/
+dist/
+*.xcuserdata/
+.DS_Store
+
+# Node helper dependencies
+node_modules/
+
+# Runtime / secrets — never commit (camera config, HAP pairing keys, logs)
+config.json
+homekit-bridge.json
+homekit-username.txt
+hap-storage/
+*.pem
+*.key
+.env
+.env.*
+*.log
