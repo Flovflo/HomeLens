@@ -1,6 +1,7 @@
 import AVFoundation
 import Darwin
 import Foundation
+import HomeLensCore
 
 /// Drives a live, low-latency video+audio preview of an RTSP camera entirely
 /// with native frameworks. AVPlayer cannot read RTSP, so ffmpeg remuxes the
@@ -26,7 +27,7 @@ final class LivePlayerService: ObservableObject {
     private var restartAttempt = 0
     private var generation = 0
 
-    private let ffmpegPath = "/opt/homebrew/bin/ffmpeg"
+    private let ffmpegPath = BundledBinaries.ffmpeg
     private var currentProfile: CameraPreviewProfile?
 
     init() {

@@ -65,13 +65,24 @@ The bridge embeds a minimal [HAP-NodeJS](https://github.com/homebridge/HAP-NodeJ
 
 ## 🚀 Quick start
 
-### Requirements
+### Option A — Download the app (nothing else to install)
+Grab **`HomeLens.dmg`**, drag **HomeLens** to **Applications**, and open it.
+**ffmpeg, ffprobe and Node.js are bundled inside the app** — there is nothing
+else to install, no Homebrew required. On first launch, right‑click the app →
+**Open** (it's signed ad‑hoc, so Gatekeeper asks once).
+
+> Build the DMG yourself with `./script/package_app.sh && ./script/make_dmg.sh`
+> → `dist/HomeLens.dmg` (Apple Silicon).
+
+### Option B — Build from source
+
+#### Requirements
 - **macOS 14+** (Apple Silicon recommended for the hardware media engine)
 - **Homebrew**, **Node.js**, **ffmpeg**: `brew install node ffmpeg`
 - A **Reolink** (or ONVIF/RTSP) camera on your LAN
 - An **Apple Home hub** (HomePod / Apple TV) for HomeKit Secure Video
 
-### Install
+#### Install
 ```bash
 git clone https://github.com/<you>/HomeLens.git
 cd HomeLens

@@ -178,6 +178,7 @@ struct HomeLensCLI {
             host: camera.host,
             serialNumber: camera.id.uuidString,
             username: homeKitUsername(store: store),
+            ffmpegPath: BundledBinaries.ffmpeg,
             storagePath: URL(fileURLWithPath: store.supportPath)
                 .appendingPathComponent("hap-storage", isDirectory: true)
                 .path,
@@ -303,8 +304,13 @@ struct HomeLensCLI {
         }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["node", helperPath]
+        if let node = BundledBinaries.node {
+            process.executableURL = URL(fileURLWithPath: node)
+            process.arguments = [helperPath]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["node", helperPath]
+        }
         process.currentDirectoryURL = URL(fileURLWithPath: helperDir)
         var environment = ProcessInfo.processInfo.environment
         environment["HOMELENS_BRIDGE_CONFIG"] = store.homeKitBridgeConfigPath
@@ -406,6 +412,11 @@ struct HomeLensCLI {
         if let override = ProcessInfo.processInfo.environment["HOMELENS_HOMEKIT_HELPER"], !override.isEmpty {
             return override
         }
+        // Packaged app: the helper ships inside HomeLens.app/Contents/Resources.
+        if let bundled = BundledBinaries.helperEntryPoint {
+            return bundled
+        }
+        // Dev checkout: resolve relative to the working directory (repo root).
         let candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("Helpers/HomeKitBridge/src/index.mjs")
             .path
@@ -544,8 +555,13 @@ private final class HomeKitHelperSupervisor: @unchecked Sendable {
         }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["node", helperPath]
+        if let node = BundledBinaries.node {
+            process.executableURL = URL(fileURLWithPath: node)
+            process.arguments = [helperPath]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["node", helperPath]
+        }
         process.currentDirectoryURL = URL(fileURLWithPath: helperDir)
         var environment = ProcessInfo.processInfo.environment
         environment["HOMELENS_BRIDGE_CONFIG"] = configPath

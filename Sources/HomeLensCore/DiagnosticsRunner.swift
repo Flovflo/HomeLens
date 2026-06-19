@@ -45,7 +45,7 @@ public final class DiagnosticsRunner: @unchecked Sendable {
         camera: CameraConfig,
         password: String?,
         supportPath: String,
-        ffmpegPath: String = "/opt/homebrew/bin/ffmpeg",
+        ffmpegPath: String = BundledBinaries.ffmpeg,
         helperDir: String? = nil,
         accessoryPort: Int = 51826,
         onResult: @escaping @Sendable (DiagnosticResult) -> Void
@@ -66,7 +66,11 @@ public final class DiagnosticsRunner: @unchecked Sendable {
 
         // ── Relai HomeLens ──────────────────────────────────────────────────
         onResult(await binaryCheck(id: "ffmpeg", title: "ffmpeg", path: ffmpegPath, args: ["-version"], firstLineOnly: true))
-        onResult(await binaryCheck(id: "node", title: "Node.js", path: "/usr/bin/env", args: ["node", "--version"], firstLineOnly: true))
+        if let node = BundledBinaries.node {
+            onResult(await binaryCheck(id: "node", title: "Node.js", path: node, args: ["--version"], firstLineOnly: true))
+        } else {
+            onResult(await binaryCheck(id: "node", title: "Node.js", path: "/usr/bin/env", args: ["node", "--version"], firstLineOnly: true))
+        }
         onResult(depsCheck(helperDir: helperDir))
         onResult(await helperProcessCheck())
         onResult(await portCheck(port: accessoryPort))

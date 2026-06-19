@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import HomeLensCore
 
 enum CameraPreviewProfile: String, CaseIterable, Identifiable {
     case sub
@@ -151,7 +152,7 @@ final class CameraPreviewService: @unchecked Sendable {
     private func runFFmpegSnapshot(rtspURL: String, maxWidth: Int, timeoutSeconds: TimeInterval) async throws -> Data {
         try await Task.detached(priority: .utility) {
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+            process.executableURL = URL(fileURLWithPath: BundledBinaries.ffmpeg)
             process.arguments = [
                 "-hide_banner",
                 "-loglevel", "error",

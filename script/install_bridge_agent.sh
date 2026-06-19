@@ -6,7 +6,8 @@ set -euo pipefail
 # which is only a monitor/preview/diagnostics surface.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/dist/HomeLens.app"
+# Defaults to the repo build; a clean install sets HOMELENS_APP=/Applications/HomeLens.app
+APP="${HOMELENS_APP:-$ROOT/dist/HomeLens.app}"
 CTL="$APP/Contents/MacOS/homelensctl"
 HELPER="$APP/Contents/Resources/Helpers/HomeKitBridge/src/index.mjs"
 LABEL="com.flo.HomeLens"
@@ -37,7 +38,7 @@ cat > "$PLIST" <<PLIST
         <string>homekit-run</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>$ROOT</string>
+    <string>$(dirname "$APP")</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>

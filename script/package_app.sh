@@ -58,4 +58,17 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 PLIST
 
 chmod +x "$MACOS/HomeLens" "$MACOS/homelensctl"
-echo "Built $APP"
+
+# Bundle ffmpeg/ffprobe/node + their dylibs so the app runs with nothing
+# installed (rewrites install names to @rpath, ad-hoc re-signs the bundled bins).
+python3 "$ROOT/script/bundle_portable.py" "$APP"
+
+# Ad-hoc sign inside-out so the sealed bundle is internally consistent. There is
+# no Developer ID here, so Gatekeeper still quarantines on first download — the
+# DMG README explains the one-time right-click→Open / xattr step.
+codesign --force --sign - "$MACOS/homelensctl"
+codesign --force --sign - "$MACOS/HomeLens"
+codesign --force --sign - "$APP"
+
+SIZE="$(du -sh "$APP" | cut -f1)"
+echo "Built self-contained $APP ($SIZE)"

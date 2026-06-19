@@ -7,7 +7,8 @@ set -euo pipefail
 # RunAtLoad + no KeepAlive => `open` runs once at login (no respawn loop).
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/dist/HomeLens.app"
+# Defaults to the repo build; a clean install sets HOMELENS_APP=/Applications/HomeLens.app
+APP="${HOMELENS_APP:-$ROOT/dist/HomeLens.app}"
 LABEL="com.flo.HomeLens.ui"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/HomeLens"
