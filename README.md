@@ -8,7 +8,6 @@
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange?logo=swift)](https://swift.org)
 [![HomeKit](https://img.shields.io/badge/HomeKit-Secure%20Video-blue?logo=apple)](https://developer.apple.com/apple-home/)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-VideoToolbox-success)](https://developer.apple.com/videotoolbox/)
-[![License](https://img.shields.io/badge/license-MIT-green)](#-license)
 
 </div>
 
@@ -174,10 +173,6 @@ docs/                ARCHITECTURE.md · CLI.md · FEASIBILITY.md
 **Swift 6 · SwiftUI · Swift Package Manager · AVFoundation / VideoToolbox · Network.framework · HAP-NodeJS · ffmpeg · ONVIF · RTSP**
 
 ---
-
-## 📜 License
-
-MIT — see [`LICENSE`](LICENSE).
 
 > HomeLens is an independent project and is **not affiliated with, endorsed by, or sponsored by Apple Inc. or Reolink.** "Apple", "HomeKit", "Apple Home", and "HomeKit Secure Video" are trademarks of Apple Inc.
 
