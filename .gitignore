@@ -4,6 +4,10 @@ dist/
 *.xcuserdata/
 .DS_Store
 
+# Local Codex / editor state
+.codex/
+.vscode/
+
 # Node helper dependencies
 node_modules/
 
