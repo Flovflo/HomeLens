@@ -24,7 +24,7 @@ HomeLens publie **une** caméra Reolink (RTSP/ONVIF) dans Apple Home, avec vidé
 
 Apple ne permet pas à une app Swift de *publier* une caméra : `HomeKit.framework` ne fait que contrôler des accessoires existants. On utilise donc un petit **helper Node (HAP-NodeJS)** : `Helpers/HomeKitBridge/src/index.mjs`.
 
-Le helper est lancé et supervisé par la commande **`homelensctl homekit-run`**, elle-même démarrée en permanence par un **agent launchd** (`com.flo.HomeLens`, KeepAlive → redémarre tout seul, au login et en cas de crash). C'est *la frontière de fiabilité* : le pont tourne 24/7, que la fenêtre de l'app soit ouverte ou non.
+Le helper est lancé et supervisé par la commande **`homelensctl homekit-run`**, elle-même démarrée en permanence par un **agent launchd** (`com.homelens.app`, KeepAlive → redémarre tout seul, au login et en cas de crash). C'est *la frontière de fiabilité* : le pont tourne 24/7, que la fenêtre de l'app soit ouverte ou non.
 
 Ce que fait le helper :
 

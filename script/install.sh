@@ -4,8 +4,8 @@
 # Mounts dist/HomeLens.dmg, copies HomeLens.app into /Applications (exact byte
 # copy, so the ad-hoc signature -- and your camera-password Keychain ACL --
 # carry over), then points the two launchd agents at the installed app:
-#   - com.flo.HomeLens     : the 24/7 HomeKit bridge (KeepAlive)
-#   - com.flo.HomeLens.ui  : auto-opens the monitor app at login
+#   - com.homelens.app     : the 24/7 HomeKit bridge (KeepAlive)
+#   - com.homelens.app.ui  : auto-opens the monitor app at login
 #
 # Your camera config, Keychain password and HomeKit pairing are NOT touched.
 set -euo pipefail
@@ -24,7 +24,7 @@ if [[ ! -f "$DMG" ]]; then
 fi
 
 echo "[1/4] Stopping any running HomeLens (bridge, helper, UI)..."
-for L in com.flo.HomeLens com.flo.HomeLens.ui; do
+for L in com.homelens.app com.homelens.app.ui; do
   launchctl bootout "gui/${UID_}" "$HOME/Library/LaunchAgents/${L}.plist" 2>/dev/null || true
 done
 osascript -e 'quit app "HomeLens"' 2>/dev/null || true

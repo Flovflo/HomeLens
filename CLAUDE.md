@@ -51,7 +51,7 @@ ONVIF motion/person events → Swift parses them → forwarded as **JSON lines o
 ### Runtime state locations
 
 - Config + secrets: `~/Library/Application Support/HomeLens/` (`homekit-bridge.json`, `homekit-username.txt`, `hap-storage/`); camera password in macOS Keychain.
-- HAP defaults: pairing PIN `031-45-154`, port `51826`, bundle id `com.flo.HomeLens`.
+- HAP defaults: pairing PIN `031-45-154`, port `51826`, bundle id `com.homelens.app`.
 
 ## Current status / next step
 

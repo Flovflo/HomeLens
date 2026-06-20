@@ -3,13 +3,13 @@ set -euo pipefail
 
 # Auto-launches the visible HomeLens app (Dock + menu-bar icon) at login, so you
 # can always see/monitor the bridge. This is separate from the headless bridge
-# agent (com.flo.HomeLens) — the bridge runs HomeKit; this just shows the UI.
+# agent (com.homelens.app) — the bridge runs HomeKit; this just shows the UI.
 # RunAtLoad + no KeepAlive => `open` runs once at login (no respawn loop).
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Defaults to the repo build; a clean install sets HOMELENS_APP=/Applications/HomeLens.app
 APP="${HOMELENS_APP:-$ROOT/dist/HomeLens.app}"
-LABEL="com.flo.HomeLens.ui"
+LABEL="com.homelens.app.ui"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/HomeLens"
 

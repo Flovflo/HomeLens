@@ -25,11 +25,17 @@ struct HomeLensApp: App {
 
     var body: some Scene {
         WindowGroup("HomeLens", id: "main") {
-            ContentView(model: model)
-                .frame(minWidth: 1220, minHeight: 820)
-                .task {
-                    await model.load()
+            Group {
+                if model.showOnboarding {
+                    OnboardingView(model: model)
+                } else {
+                    ContentView(model: model)
                 }
+            }
+            .frame(minWidth: 1220, minHeight: 820)
+            .task {
+                await model.load()
+            }
         }
         .defaultSize(width: 1320, height: 880)
 

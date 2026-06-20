@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="${HOMELENS_APP:-$ROOT/dist/HomeLens.app}"
 CTL="$APP/Contents/MacOS/homelensctl"
 HELPER="$APP/Contents/Resources/Helpers/HomeKitBridge/src/index.mjs"
-LABEL="com.flo.HomeLens"
+LABEL="com.homelens.app"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/HomeLens"
 

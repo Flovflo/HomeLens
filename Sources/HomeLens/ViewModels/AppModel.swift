@@ -18,11 +18,13 @@ final class AppModel: ObservableObject {
     @Published var feasibilitySummary = FeasibilitySummary.current
     @Published var homeKitStatus = HomeKitStatus()
     @Published var networkInterfaces: [NetworkInterfaceInfo] = []
+    @Published var showOnboarding = false
 
     let logger = AppLogger()
     let bridge: BridgeController
     let live = LivePlayerService()
     let diagnostics = DiagnosticsService()
+    let serviceManager = ServiceManager()
 
     private let store = AppConfigStore()
     private let importer = ScryptedImporter()
@@ -63,12 +65,50 @@ final class AppModel: ObservableObject {
             // The HomeKit bridge runs independently (launchd `homekit-run`); the GUI
             // only monitors it, so we don't spawn a competing helper here.
             startStatusRefreshTimer()
-            await startLive()
+            // First run / not yet set up → show the guided wizard instead of an
+            // empty dashboard. The wizard installs the background service itself.
+            showOnboarding = cameras.isEmpty || cameras.first?.host.isEmpty == true || !serviceManager.isBridgeInstalled
+            if !showOnboarding {
+                await startLive()
+            }
         } catch {
             logger.error("Config", "Failed to load config: \(error.localizedDescription)")
             cameras = [CameraConfig()]
             selectedCameraID = cameras.first?.id
+            showOnboarding = true
         }
+    }
+
+    /// Re-open the guided setup (from a dashboard button).
+    func beginOnboarding() {
+        showOnboarding = true
+    }
+
+    /// Quick reachability check for values typed in the wizard, without saving.
+    func testConnection(host: String, username: String, password: String, profile: CameraConfig.StreamProfile) async -> ServiceTestResult {
+        var cam = CameraConfig()
+        cam.host = host.trimmingCharacters(in: .whitespaces)
+        cam.username = username.trimmingCharacters(in: .whitespaces)
+        cam.streamProfile = profile
+        return await rtspManager.test(camera: cam, password: password)
+    }
+
+    /// Persist config + password via the bundled `homelensctl init` (so the
+    /// background bridge owns the Keychain item), install + start the launchd
+    /// service, then reload. Throws on failure so the wizard can show the error.
+    func finishOnboarding(host: String, username: String, password: String, profile: CameraConfig.StreamProfile, name: String) async throws {
+        let cleanHost = host.trimmingCharacters(in: .whitespaces)
+        let cleanUser = username.trimmingCharacters(in: .whitespaces)
+        let cleanName = name.trimmingCharacters(in: .whitespaces).isEmpty ? "Front Door" : name
+        try await serviceManager.writeConfig(host: cleanHost, username: cleanUser, password: password, name: cleanName, profile: profile.rawValue)
+        try await serviceManager.installAndStart()
+        let config = try store.load()
+        cameras = config.cameras
+        selectedCameraID = cameras.first?.id
+        refreshHomeKitStatus()
+        showOnboarding = false
+        await startLive()
+        logger.info("Onboarding", "Configuration enregistrée et service démarré.")
     }
 
     func updateSelected(_ edit: (inout CameraConfig) -> Void) {
@@ -161,7 +201,7 @@ final class AppModel: ObservableObject {
         let uid = getuid()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["kickstart", "-k", "gui/\(uid)/com.flo.HomeLens"]
+        process.arguments = ["kickstart", "-k", "gui/\(uid)/com.homelens.app"]
         do {
             try process.run()
             process.waitUntilExit()

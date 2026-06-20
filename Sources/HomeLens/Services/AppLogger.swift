@@ -5,7 +5,7 @@ import OSLog
 final class AppLogger: ObservableObject {
     @Published private(set) var events: [LogEvent] = []
 
-    private let osLog = Logger(subsystem: "com.flo.HomeLens", category: "app")
+    private let osLog = Logger(subsystem: "com.homelens.app", category: "app")
     private let dateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

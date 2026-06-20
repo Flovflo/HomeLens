@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LABEL="com.flo.HomeLens"
+LABEL="com.homelens.app"
 SUPPORT="$HOME/Library/Application Support/HomeLens"
 STORAGE="$SUPPORT/hap-storage"
 CONFIG="$SUPPORT/homekit-bridge.json"

@@ -33,7 +33,7 @@ struct StoredAppConfig: Codable {
 final class AppConfigStore {
     private let appSupportURL: URL
     private let configURL: URL
-    private let keychainService = "com.flo.HomeLens.camera"
+    private let keychainService = "com.homelens.app.camera"
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!

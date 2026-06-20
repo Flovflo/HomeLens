@@ -31,7 +31,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundleIconFile</key>
     <string>HomeLens</string>
     <key>CFBundleIdentifier</key>
-    <string>com.flo.HomeLens</string>
+    <string>com.homelens.app</string>
     <key>CFBundleName</key>
     <string>HomeLens</string>
     <key>CFBundleDisplayName</key>

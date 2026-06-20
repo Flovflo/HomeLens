@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/dist/HomeLens.app"
 EXECUTABLE="$APP/Contents/MacOS/HomeLens"
-LABEL="com.flo.HomeLens"
+LABEL="com.homelens.app"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/HomeLens"
 

@@ -7,7 +7,7 @@ import Network
 /// dependency: built on Network.framework, bound to loopback, path-sanitised.
 final class LocalHLSServer: @unchecked Sendable {
     private let rootDir: URL
-    private let queue = DispatchQueue(label: "com.flo.HomeLens.hls-server")
+    private let queue = DispatchQueue(label: "com.homelens.app.hls-server")
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
 

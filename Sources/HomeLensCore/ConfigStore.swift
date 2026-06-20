@@ -12,7 +12,7 @@ public struct StoredAppConfig: Codable, Sendable {
 public final class ConfigStore: @unchecked Sendable {
     private let appSupportURL: URL
     private let configURL: URL
-    private let keychainService = "com.flo.HomeLens.camera"
+    private let keychainService = "com.homelens.app.camera"
 
     public init(appName: String = "HomeLens") {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
