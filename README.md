@@ -71,8 +71,7 @@ Grab **`HomeLens.dmg`**, drag **HomeLens** to **Applications**, and open it.
 else to install, no Homebrew required. On first launch, right‑click the app →
 **Open** (it's signed ad‑hoc, so Gatekeeper asks once).
 
-> Build the DMG yourself with `./script/package_app.sh && ./script/make_dmg.sh`
-> → `dist/HomeLens.dmg` (Apple Silicon).
+https://github.com/Flovflo/HomeLens/releases
 
 ### Option B — Build from source
 
