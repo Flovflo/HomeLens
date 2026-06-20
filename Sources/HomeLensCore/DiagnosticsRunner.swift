@@ -436,6 +436,11 @@ public final class DiagnosticsRunner: @unchecked Sendable {
 
         let out = String(decoding: outPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         let err = String(decoding: errPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return (process.terminationStatus, out, err)
+        // Reap the process before reading terminationStatus. Reading it while the
+        // task is still running (e.g. a long-running probe we just killed) raises
+        // an ObjC NSException that cannot be caught in Swift and aborts the app.
+        process.waitUntilExit()
+        let code = process.isRunning ? -1 : process.terminationStatus
+        return (code, out, err)
     }
 }
