@@ -21,3 +21,13 @@ hap-storage/
 .env
 .env.*
 *.log
+
+# Apple signing / notarization secrets — never commit (defense in depth)
+*.p8
+*.p12
+*.cer
+*.crt
+*.certSigningRequest
+*.mobileprovision
+cert/
+AuthKey_*
