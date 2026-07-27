@@ -244,6 +244,22 @@ class ReolinkStreamingDelegate {
     this.prebuffer = undefined;
     this.controller = undefined;
     this.isMotionActive = () => false;
+    this.snapshotCache = undefined;
+    this.snapshotRefreshInFlight = false;
+    this.snapshotWaiters = [];
+    this.lastSnapshotRequest = { width: 1280, height: 720, reason: "warmup" };
+
+    // Prime Home's camera tile before a controller asks for it. Reolink needs a
+    // fresh RTSP handshake and an I-frame for every one-shot snapshot, which can
+    // take several seconds. Keeping the last JPEG lets subsequent tile and live
+    // requests return immediately without competing with the live ffmpeg jobs.
+    setTimeout(() => this.refreshSnapshotCache(this.lastSnapshotRequest), 250).unref?.();
+    this.snapshotRefreshTimer = setInterval(() => {
+      if (!this.pendingSessions.size && !this.ongoingSessions.size) {
+        this.refreshSnapshotCache(this.lastSnapshotRequest);
+      }
+    }, 30_000);
+    this.snapshotRefreshTimer.unref?.();
   }
 
   // Whether HomeKit Secure Video should capture the camera's audio. HomeKit's
@@ -259,6 +275,68 @@ class ReolinkStreamingDelegate {
     log("info", "snapshot", `snapshot requested ${request.width}x${request.height}`, {
       reason: request.reason,
     });
+    this.lastSnapshotRequest = request;
+
+    if (this.snapshotCache?.image?.length) {
+      const ageMs = Date.now() - this.snapshotCache.createdAt;
+      log("debug", "snapshot", `serving cached snapshot age=${ageMs}ms bytes=${this.snapshotCache.image.length}`);
+      callback(undefined, this.snapshotCache.image);
+
+      // Refresh after replying so Home never waits for a camera handshake. Also
+      // refresh when the requested size changes; Home tolerates the cached JPEG
+      // for the immediate tile and receives the exact size on its next request.
+      if (ageMs > 2_000 ||
+          this.snapshotCache.width !== request.width ||
+          this.snapshotCache.height !== request.height) {
+        this.scheduleSnapshotRefresh(request);
+      }
+      return;
+    }
+
+    // Coalesce the burst of identical requests Home can issue while opening a
+    // camera. Only one RTSP snapshot process should compete with the live stream.
+    this.snapshotWaiters.push(callback);
+    this.refreshSnapshotCache(request);
+  }
+
+  refreshSnapshotCache(request) {
+    if (this.snapshotRefreshInFlight) {
+      return;
+    }
+    this.snapshotRefreshInFlight = true;
+    this.captureSnapshot(request, (error, image) => {
+      this.snapshotRefreshInFlight = false;
+      if (!error && isJPEG(image)) {
+        this.snapshotCache = {
+          image,
+          width: request.width,
+          height: request.height,
+          createdAt: Date.now(),
+        };
+      }
+
+      const waiters = this.snapshotWaiters.splice(0);
+      for (const waiter of waiters) {
+        waiter(error, image);
+      }
+    });
+  }
+
+  scheduleSnapshotRefresh(request) {
+    clearTimeout(this.snapshotRefreshDelay);
+    this.snapshotRefreshDelay = setTimeout(() => {
+      this.snapshotRefreshDelay = undefined;
+      // Opening a camera requests its tile immediately before starting live
+      // video. Do not let a cosmetic refresh consume another camera connection
+      // while that latency-sensitive stream is active.
+      if (!this.pendingSessions.size && !this.ongoingSessions.size) {
+        this.refreshSnapshotCache(request);
+      }
+    }, 5_000);
+    this.snapshotRefreshDelay.unref?.();
+  }
+
+  captureSnapshot(request, callback) {
     // The Reolink HTTP Snap API on this firmware requires a token login and
     // answers inline user/password auth with a JSON error (HTTP 200) — and can
     // lock out logins. So snapshot from the RTSP stream (reliable, separate
@@ -346,6 +424,18 @@ class ReolinkStreamingDelegate {
       "-hide_banner",
       "-loglevel",
       "warning",
+      "-fflags",
+      "nobuffer",
+      "-flags",
+      "low_delay",
+      "-avioflags",
+      "direct",
+      "-analyzeduration",
+      "0",
+      "-probesize",
+      "32",
+      "-fpsprobesize",
+      "0",
       "-timeout",
       "6000000",
       "-rtsp_transport",
@@ -363,6 +453,15 @@ class ReolinkStreamingDelegate {
     const ffmpeg = spawn(this.config.ffmpegPath, args, { env: process.env });
     const chunks = [];
     let stderr = "";
+    let settled = false;
+    const finish = (error, image) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      callback(error, image);
+    };
 
     const timer = setTimeout(() => {
       ffmpeg.kill("SIGKILL");
@@ -373,16 +472,14 @@ class ReolinkStreamingDelegate {
       stderr += data.toString("utf8");
     });
     ffmpeg.on("error", (error) => {
-      clearTimeout(timer);
-      callback(error);
+      finish(error);
     });
     ffmpeg.on("exit", (code, signal) => {
-      clearTimeout(timer);
       if (code === 0 && chunks.length) {
-        callback(undefined, Buffer.concat(chunks));
+        finish(undefined, Buffer.concat(chunks));
         return;
       }
-      callback(new Error(`snapshot ffmpeg exited code=${code} signal=${signal} ${stderr.slice(-300)}`));
+      finish(new Error(`snapshot ffmpeg exited code=${code} signal=${signal} ${stderr.slice(-300)}`));
     });
   }
 
@@ -540,10 +637,14 @@ class ReolinkStreamingDelegate {
       "nobuffer",
       "-flags",
       "low_delay",
+      "-avioflags",
+      "direct",
       "-analyzeduration",
-      "1000000",
+      "0",
       "-probesize",
-      "1000000",
+      "32",
+      "-fpsprobesize",
+      "0",
       "-timeout",
       "8000000",
       "-rtsp_transport",

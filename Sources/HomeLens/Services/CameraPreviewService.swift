@@ -156,6 +156,12 @@ final class CameraPreviewService: @unchecked Sendable {
             process.arguments = [
                 "-hide_banner",
                 "-loglevel", "error",
+                "-fflags", "nobuffer",
+                "-flags", "low_delay",
+                "-avioflags", "direct",
+                "-analyzeduration", "0",
+                "-probesize", "32",
+                "-fpsprobesize", "0",
                 "-rtsp_transport", "tcp",
                 "-timeout", String(Int(timeoutSeconds * 1_000_000)),
                 "-i", rtspURL,
