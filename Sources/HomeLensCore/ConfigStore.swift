@@ -57,14 +57,6 @@ public final class ConfigStore: @unchecked Sendable {
     }
 
     public func password(for cameraID: UUID) -> String? {
-        // Ad-hoc signing changes the executable's code identity on every local
-        // rebuild, so a launchd-managed CLI can lose direct SecItem access even
-        // though the Keychain entry still exists. `/usr/bin/security` has a
-        // stable identity and is also what the GUI uses for reliable reads.
-        if let password = passwordFromSecurityTool(for: cameraID) {
-            return password
-        }
-
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -79,31 +71,6 @@ public final class ConfigStore: @unchecked Sendable {
             return nil
         }
         return String(data: data, encoding: .utf8)
-    }
-
-    private func passwordFromSecurityTool(for cameraID: UUID) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = [
-            "find-generic-password",
-            "-s", keychainService,
-            "-a", cameraID.uuidString,
-            "-w",
-        ]
-
-        let stdout = Pipe()
-        process.standardOutput = stdout
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return nil
-        }
-        guard process.terminationStatus == 0 else { return nil }
-        return String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
     }
 
     public func setPassword(_ password: String, for cameraID: UUID) throws {
@@ -127,12 +94,6 @@ public final class ConfigStore: @unchecked Sendable {
         guard status == errSecSuccess else {
             throw ConfigStoreError.keychain(status)
         }
-    }
-}
-
-private extension String {
-    var nilIfEmpty: String? {
-        isEmpty ? nil : self
     }
 }
 
