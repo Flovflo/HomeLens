@@ -4,7 +4,11 @@
 
 # HomeLens
 
-### Your Reolink camera in Apple Home — **live video + audio and HomeKit Secure Video in original 4K quality** — from a tiny native macOS app.
+### Your Reolink camera in Apple Home — **true 4K live view and 4K HomeKit Secure Video recordings** — from a tiny native macOS app.
+
+[![4K](https://img.shields.io/badge/4K-3840%C3%972160%20original%20stream-1d4ed8?style=flat-square)](#-4k-end-to-end)
+[![H.264 / HEVC](https://img.shields.io/badge/codec-H.264%20%7C%20HEVC%20passthrough-1d4ed8?style=flat-square)](#-4k-end-to-end)
+[![HKSV](https://img.shields.io/badge/HomeKit%20Secure%20Video-iOS%2027-1d4ed8?style=flat-square)](#-4k-end-to-end)
 
 [![Download](https://img.shields.io/github/v/release/Flovflo/HomeLens?label=Download%20DMG&style=for-the-badge&logo=apple&color=1d4ed8)](https://github.com/Flovflo/HomeLens/releases/latest)
 
@@ -39,6 +43,34 @@ Apple's `HomeKit.framework` can **control** accessories — but it **cannot publ
                               │  macOS app (SwiftUI)     │◀── live preview + diagnostics
                               └──────────────────────────┘
 ```
+
+---
+
+## 📐 4K end to end
+
+Most HomeKit bridges re-encode your camera to 1080p (or less) before Apple Home ever sees it. HomeLens sends the **camera's original stream**:
+
+| Path | What Apple Home receives | Encoding on the Mac |
+|---|---|---|
+| **Live view on your Wi-Fi** (iPhone, iPad, Apple TV, Mac) | **3840 × 2160 H.264**, the camera's own bitstream | none (bit-exact copy) |
+| **HomeKit Secure Video recordings** (iOS/tvOS 27 hubs) | **3840 × 2160 H.264 or HEVC** fragments, camera audio as AAC | none for video |
+| Live view away from home | H.264 at the resolution/bitrate Apple negotiates | VideoToolbox (hardware) |
+| Older hubs (compatibility mode) | 1080p H.264 as negotiated | VideoToolbox (hardware) |
+| macOS preview | 4K H.264/HEVC decoded by AVFoundation | none |
+
+Verified on a Reolink **CX810** (4K, 6 Mbit/s): recordings are stored at 3840 × 2160 and the live view keeps the original quality even when Home asks for 640 × 360 at 132 kbit/s. Measurements and the exact policy are in [docs/VIDEO_PIPELINE.md](docs/VIDEO_PIPELINE.md).
+
+### HomeLens vs. the usual options
+
+| | HomeLens | Scrypted | Homebridge + camera-ffmpeg |
+|---|---|---|---|
+| Install | Download a DMG, open, done | Docker / Node server | Node + plugins |
+| Scope | One camera, done right | Everything (NVR, plugins…) | Many plugins |
+| 4K live on LAN | ✅ original stream | ✅ | ❌ re-encoded |
+| 4K / HEVC HSV recordings | ✅ original stream | ✅ (NVR) | ❌ |
+| Reolink burst/jitter fix | ✅ re-timed + paced RTP | partial | ❌ |
+| Native macOS app + diagnostics | ✅ | web UI | web UI |
+| Runs without a browser or Docker | ✅ launchd agent | ❌ | ❌ |
 
 ---
 
@@ -175,6 +207,12 @@ Native recording copies compressed video without decoding or encoding it. Live v
 
 **Multiple cameras?**
 HomeLens is intentionally focused on **one camera, done right**.
+
+**Which cameras work?**
+Any **Reolink** camera with RTSP (tested: CX810 4K). Motion and **person detection** come from Reolink's HTTP API; other ONVIF/RTSP cameras get ONVIF motion events. Wired (PoE) or Wi-Fi models both work; the bridge talks to the camera over your LAN only.
+
+**Does it replace Scrypted or Homebridge?**
+For a single Reolink camera in Apple Home, yes: same 4K result, no Docker, no server, no plugins, and a native app that tells you where the chain breaks.
 
 ---
 

@@ -1,0 +1,6 @@
+title: HomeLens
+description: Put your Reolink camera in Apple Home with true 4K live view and 4K HomeKit Secure Video, from a tiny native macOS app.
+theme: jekyll-theme-minimal
+logo: https://raw.githubusercontent.com/Flovflo/HomeLens/main/Assets/Generated/HomeLensIcon.png
+show_downloads: false
+exclude: ["*.md.bak"]
