@@ -1,13 +1,21 @@
 <div align="center">
 
-# 🎥 HomeLens
+<img src="Assets/Generated/HomeLensIcon.png" width="160" alt="HomeLens icon">
 
-### Turn any Reolink camera into a first-class Apple Home camera — **live video + audio, HomeKit Secure Video, up to 4K** — accelerated by the Apple Silicon media engine.
+# HomeLens
 
-[![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-black?logo=apple)](https://www.apple.com/macos/)
+### Your Reolink camera in Apple Home — **live video + audio and HomeKit Secure Video in original 4K quality** — from a tiny native macOS app.
+
+[![Download](https://img.shields.io/github/v/release/Flovflo/HomeLens?label=Download%20DMG&style=for-the-badge&logo=apple&color=1d4ed8)](https://github.com/Flovflo/HomeLens/releases/latest)
+
+[![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20%C2%B7%20Apple%20Silicon-black?logo=apple)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange?logo=swift)](https://swift.org)
 [![HomeKit](https://img.shields.io/badge/HomeKit-Secure%20Video-blue?logo=apple)](https://developer.apple.com/apple-home/)
-[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-VideoToolbox-success)](https://developer.apple.com/videotoolbox/)
+[![Notarized](https://img.shields.io/badge/Apple-notarized-success?logo=apple)](https://github.com/Flovflo/HomeLens/releases/latest)
+[![License](https://img.shields.io/github/license/Flovflo/HomeLens)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/Flovflo/HomeLens/total?color=1d4ed8)](https://github.com/Flovflo/HomeLens/releases)
+
+**Download the DMG, drag to Applications, open, follow the wizard. Nothing else to install.**
 
 </div>
 
@@ -38,10 +46,10 @@ Apple's `HomeKit.framework` can **control** accessories — but it **cannot publ
 
 | | |
 |---|---|
-| 📺 **Live in Apple Home** | Real-time video **with audio** (Opus), streamed to iPhone / iPad / Apple TV. |
-| 🔴 **HomeKit Secure Video** | HSV recording up to **native 4K on iOS/tvOS 27**, with camera audio when enabled in Home. |
-| ⚡ **Apple-silicon optimized** | **VideoToolbox** for live/compatible encoding; **no video encoding** for original-quality recordings. |
-| 🎞️ **Zero-loss 4K passthrough** | Original-quality recordings preserve **H.264 or H.265** video untouched. Live view uses hardware H.264 encoding. |
+| 📺 **Live in Apple Home** | Real-time video **with audio** (Opus) on iPhone / iPad / Apple TV. On your Wi-Fi the **original 4K H.264** stream is sent untouched. |
+| 🔴 **HomeKit Secure Video** | Recordings in **original quality up to 4K, H.264 or H.265**, on iOS/tvOS 27 hubs — no re-encoding, no quality loss. |
+| 🎯 **Smooth, not just sharp** | Reolink cameras send video in bursts with erratic timestamps; HomeLens re-times and paces the stream so iPhone playback stays fluid. |
+| ⚡ **Apple-silicon optimized** | **VideoToolbox** hardware encoding for remote/compatibility paths; **zero encoding** for original-quality streams. |
 | 🖥️ **Native macOS app** | SwiftUI preview with **Fast / Quality** sources, mute toggle, live status pills. |
 | 🩺 **End-to-end diagnostics** | One glance from **camera → relay → network/Apple → Home** — instantly see *where* it breaks. |
 | 🔌 **Multi-NIC aware** | Pick the network interface; smart routing fixes the classic "stream negotiates but stays black" bug. |
@@ -66,13 +74,13 @@ The bridge embeds a minimal [HAP-NodeJS](https://github.com/homebridge/HAP-NodeJ
 ## 🚀 Quick start
 
 ### Option A — Download the app (nothing else to install)
-Grab **`HomeLens.dmg`**, drag **HomeLens** to **Applications**, and open it.
-**ffmpeg, ffprobe and Node.js are bundled inside the app** — there is nothing
-else to install, no Homebrew required. On first launch, right‑click the app →
-**Open** (it's signed ad‑hoc, so Gatekeeper asks once).
+1. Download **[HomeLens.dmg](https://github.com/Flovflo/HomeLens/releases/latest)**.
+2. Drag **HomeLens** to **Applications** and open it — the app is **signed and notarized by Apple**, so it opens with no warning.
+3. Follow the wizard: camera address + password, then pair in the Home app.
 
-> Build the DMG yourself with `./script/package_app.sh && ./script/make_dmg.sh`
-> → `dist/HomeLens.dmg` (Apple Silicon).
+**ffmpeg, ffprobe and Node.js are bundled inside the app** — nothing else to install, no Homebrew, no Terminal.
+
+> Build the DMG yourself: `./script/package_app.sh && ./script/make_dmg.sh` → `dist/HomeLens.dmg` (see [docs/RELEASING.md](docs/RELEASING.md)).
 
 ### Option B — Build from source
 
@@ -84,7 +92,7 @@ else to install, no Homebrew required. On first launch, right‑click the app �
 
 #### Install
 ```bash
-git clone https://github.com/<you>/HomeLens.git
+git clone https://github.com/Flovflo/HomeLens.git
 cd HomeLens
 
 # 1. Helper dependencies
@@ -154,7 +162,10 @@ Pass `HOMELENS_PASSWORD` via the environment for unattended runs; set `HOMELENS_
 ## ❓ FAQ
 
 **Can it stream 4K live to my iPhone?**
-Apple supports 4K on compatible cameras with iOS 27. HomeLens currently uses the established H.264 live transport at negotiated HD resolutions, and preserves native 4K for recordings with the Original / 4K setting. All Home hubs must also run version 27.
+Yes, on your local network with the Original / 4K setting: the camera's H.264 4K stream is sent to the iPhone untouched (Home's low-bitrate requests are ignored on the LAN, as Scrypted does). Away from home, the negotiated H.264 resolution is encoded with VideoToolbox. All Home hubs must run version 27 for 4K recordings.
+
+**Why is Reolink live video choppy with other bridges?**
+The camera emits video in bursts and its RTSP timestamps jump by more than a second after every keyframe. HomeLens re-times the packets without re-encoding and paces them to the iPhone with a small jitter margin. The measurements are in [docs/VIDEO_PIPELINE.md](docs/VIDEO_PIPELINE.md).
 
 **My camera is H.265 — is that supported?**
 Yes. Original-quality recordings preserve either H.264 or HEVC/H.265 on iOS/tvOS 27. Live view and compatibility-mode recordings use VideoToolbox to convert HEVC to H.264 when needed. The Mac preview plays either format. Restart the bridge after changing the camera codec.
@@ -178,6 +189,16 @@ Helpers/HomeKitBridge/   Tiny HAP-NodeJS helper (publishes the camera to HomeKit
 script/              package_app.sh · install_bridge_agent.sh · …
 docs/                ARCHITECTURE.md · CLI.md · FEASIBILITY.md
 ```
+
+---
+
+## 🤝 Contributing & support
+
+- Something broken? Run `homelensctl doctor` and open an [issue](https://github.com/Flovflo/HomeLens/issues) with its output (passwords are never logged).
+- Questions, other camera models, ideas → [Discussions](https://github.com/Flovflo/HomeLens/discussions).
+- If HomeLens made your camera work in Apple Home, a ⭐ helps others find it.
+
+License: [MIT](LICENSE).
 
 ---
 

@@ -104,6 +104,31 @@ struct DMGBackground: View {
     }
 }
 
+// GitHub social preview (1280 x 640): icon + one-line pitch. Upload manually in
+// repository Settings → Social preview (GitHub has no API for it).
+struct SocialPreview: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color(red: 0.06, green: 0.10, blue: 0.24), Color(red: 0.03, green: 0.05, blue: 0.13)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            HStack(spacing: 56) {
+                AppIcon().frame(width: 1024, height: 1024).scaleEffect(0.36).frame(width: 370, height: 370)
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("HomeLens")
+                        .font(.system(size: 76, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("Your Reolink camera in Apple Home.\nLive video + audio, HomeKit Secure Video,\noriginal 4K quality. Native macOS.")
+                        .font(.system(size: 30, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .lineSpacing(6)
+                }
+            }
+            .padding(.horizontal, 80)
+        }
+        .frame(width: 1280, height: 640)
+    }
+}
+
 @MainActor
 func write<V: View>(_ view: V, scale: CGFloat, to path: String) {
     let renderer = ImageRenderer(content: view)
@@ -122,4 +147,5 @@ MainActor.assumeIsolated {
     write(AppIcon(), scale: 1, to: "\(out)/HomeLensIcon.png")
     write(DMGBackground(), scale: 1, to: "\(out)/dmg-background.png")
     write(DMGBackground(), scale: 2, to: "\(out)/dmg-background@2x.png")
+    write(SocialPreview(), scale: 1, to: "\(out)/social-preview.png")
 }
