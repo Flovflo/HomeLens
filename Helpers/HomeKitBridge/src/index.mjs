@@ -915,10 +915,11 @@ class ReolinkStreamingDelegate {
     session.relayAudioPort ??= nextPort();
     const audioDestinationQuery = new URLSearchParams({
       rtcpport: String(session.relayAudioPort + 1),
-      // HomeKit's audio RTP packet size. One Opus frame easily fits in 188 bytes at
-      // 24kbps mono; ffmpeg then sends one frame per packet (RFC 7587) instead of
-      // bundling several into a 1200-byte burst that overruns iOS's audio buffer.
-      pkt_size: "188",
+      // Cap, not a target: ffmpeg's Opus RTP payloader always sends one frame per
+      // packet (RFC 7587), so a larger cap never bundles frames. 188 left only
+      // 162 payload bytes and VBR peaks (173 B frames) made ffmpeg exit with
+      // "Packet size too large" — killing live audio mid-stream.
+      pkt_size: "400",
     });
     // Read audio from the lighter sub stream when available (same 16kHz AAC as main,
     // but a 640x360@10 RTSP connection has far less buffering/jitter than re-opening

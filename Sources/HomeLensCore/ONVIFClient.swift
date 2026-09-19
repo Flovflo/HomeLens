@@ -92,20 +92,30 @@ public final class ONVIFClient: @unchecked Sendable {
         // detection API — token-authenticated, polled continuously, no
         // repeated-login lockouts. Fall back to ONVIF only if this isn't a
         // reachable Reolink HTTP endpoint.
-        if let password, !password.isEmpty {
-            if await runReolinkPolling(
-                camera: camera, password: password, logger: logger,
-                stopAfterOneCycle: stopAfterOneCycle, onEvent: onEvent
-            ) {
-                return
+        // The fallback is temporary: right after a reboot the camera may answer
+        // nothing for a minute, and abandoning the native API for good left the
+        // bridge on ONVIF — which on Reolink only ever reports "motion inactive",
+        // so HomeKit Secure Video never recorded again until a manual restart.
+        let retryNativeAfter: TimeInterval = 120
+        while !Task.isCancelled {
+            if let password, !password.isEmpty {
+                if await runReolinkPolling(
+                    camera: camera, password: password, logger: logger,
+                    stopAfterOneCycle: stopAfterOneCycle, onEvent: onEvent
+                ) {
+                    return
+                }
+                logger.log(.warning, "Detection", "Native Reolink API unavailable; using ONVIF events for \(Int(retryNativeAfter))s before retrying it.")
+                if stopAfterOneCycle { return }
             }
-            logger.log(.warning, "Detection", "Native Reolink API unavailable; falling back to ONVIF events.")
-            if stopAfterOneCycle { return }
+            await runONVIFLoop(
+                camera: camera, password: password, logger: logger,
+                stopAfterOneCycle: stopAfterOneCycle,
+                until: (password?.isEmpty == false) ? Date().addingTimeInterval(retryNativeAfter) : nil,
+                onEvent: onEvent
+            )
+            if stopAfterOneCycle || password == nil || password?.isEmpty == true { return }
         }
-        await runONVIFLoop(
-            camera: camera, password: password, logger: logger,
-            stopAfterOneCycle: stopAfterOneCycle, onEvent: onEvent
-        )
     }
 
     /// Continuously polls the Reolink HTTP detection API (motion + AI person).
@@ -165,21 +175,24 @@ public final class ONVIFClient: @unchecked Sendable {
         return true
     }
 
+    /// `until`: stop (return) at that instant so the caller can retry the native API.
     private func runONVIFLoop(
         camera: CameraConfig,
         password: String?,
         logger: EventLogger,
         stopAfterOneCycle: Bool,
+        until: Date? = nil,
         onEvent: (@Sendable (DetectionEvent) -> Void)?
     ) async {
         var backoffSeconds: UInt64 = 2
-        while !Task.isCancelled {
+        while !Task.isCancelled, !(until.map { Date() >= $0 } ?? false) {
             do {
                 try await pullEvents(
                     camera: camera,
                     password: password,
                     logger: logger,
                     stopAfterOneCycle: stopAfterOneCycle,
+                    until: until,
                     onEvent: onEvent
                 )
                 backoffSeconds = 2
@@ -198,6 +211,7 @@ public final class ONVIFClient: @unchecked Sendable {
         password: String?,
         logger: EventLogger,
         stopAfterOneCycle: Bool,
+        until: Date? = nil,
         onEvent: (@Sendable (DetectionEvent) -> Void)?
     ) async throws {
         guard let deviceURL = camera.onvifURL else {
@@ -220,7 +234,7 @@ public final class ONVIFClient: @unchecked Sendable {
         let pullPointURL = pullPointURLString.flatMap(URL.init(string:)) ?? eventURL
         logger.log(.info, "ONVIF", "Subscribed to pull-point events at \(pullPointURL.absoluteString).")
 
-        while !Task.isCancelled {
+        while !Task.isCancelled, !(until.map { Date() >= $0 } ?? false) {
             logger.log(.debug, "ONVIF", "Pulling event messages.")
             let messages = try await postSOAP(
                 url: pullPointURL,
