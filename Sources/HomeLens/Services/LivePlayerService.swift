@@ -5,7 +5,7 @@ import HomeLensCore
 
 /// Drives a live, low-latency video+audio preview of an RTSP camera entirely
 /// with native frameworks. AVPlayer cannot read RTSP, so ffmpeg remuxes the
-/// stream (video + audio stream-copied, zero transcode) into HLS on disk, a
+/// original video into fragmented MP4 HLS and normalizes audio to AAC. A
 /// loopback `LocalHLSServer` serves it, and AVPlayer plays the playlist.
 @MainActor
 final class LivePlayerService: ObservableObject {
@@ -19,6 +19,7 @@ final class LivePlayerService: ObservableObject {
     @Published private(set) var player: AVPlayer?
     @Published private(set) var status: LiveStatus = .idle
     @Published var isMuted = false
+    @Published private(set) var sourceDescription = ""
 
     private var ffmpeg: Process?
     private var server: LocalHLSServer?
@@ -29,16 +30,13 @@ final class LivePlayerService: ObservableObject {
 
     private let ffmpegPath = BundledBinaries.ffmpeg
     private var currentProfile: CameraPreviewProfile?
-
-    init() {
-        // One-time cleanup of dirs left by a previous crash. Never call this from
-        // start(): it would delete a concurrent session's directory.
-        sweepOrphanSessions()
-    }
+    private var currentURL: String?
+    private var playbackMonitor: Task<Void, Never>?
 
     func start(camera: CameraConfig, password: String?, profile: CameraPreviewProfile, force: Bool = false) async {
+        let rtspURL = camera.rtspURL(profile: profile.streamProfile, password: password)?.absoluteString
         // Skip redundant restarts (load() + view triggers can fire together).
-        if !force, currentProfile == profile, status == .playing || status == .starting {
+        if !force, currentURL == rtspURL, currentProfile == profile, status == .playing || status == .starting {
             return
         }
         stop()
@@ -48,10 +46,22 @@ final class LivePlayerService: ObservableObject {
         let myGeneration = generation
         status = .starting
 
-        guard let rtsp = camera.rtspURL(profile: profile.streamProfile, password: password)?.absoluteString else {
+        guard let rtsp = rtspURL else {
             status = .failed("URL RTSP invalide.")
             return
         }
+
+        currentURL = rtsp
+        let source: VideoSource
+        do {
+            source = try await VideoSource.probe(rtspURL: rtsp)
+        } catch {
+            guard myGeneration == generation else { return }
+            status = .failed(error.localizedDescription)
+            return
+        }
+        guard myGeneration == generation, !Task.isCancelled else { return }
+        sourceDescription = source.description
 
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("homelens-hls-\(UUID().uuidString)", isDirectory: true)
@@ -73,7 +83,7 @@ final class LivePlayerService: ObservableObject {
         }
         self.server = server
 
-        let process = makeFFmpeg(rtsp: rtsp, dir: dir, profile: profile)
+        let process = makeFFmpeg(rtsp: rtsp, dir: dir, profile: profile, source: source)
         process.terminationHandler = { [weak self] proc in
             Task { @MainActor in
                 self?.handleFFmpegExit(proc, generation: myGeneration, camera: camera, password: password, profile: profile)
@@ -90,7 +100,7 @@ final class LivePlayerService: ObservableObject {
 
         // Wait for the playlist + at least one segment to appear.
         let playlist = dir.appendingPathComponent("index.m3u8")
-        let deadline = Date().addingTimeInterval(8)
+        let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {
             if myGeneration != generation { return } // superseded by a newer start()
             if isPlaylistReady(playlist) { break }
@@ -98,20 +108,36 @@ final class LivePlayerService: ObservableObject {
         }
         guard myGeneration == generation else { return }
         guard isPlaylistReady(playlist) else {
-            status = .failed("Flux indisponible (délai dépassé).")
             stop()
+            status = .failed("Flux indisponible (délai dépassé). Vérifiez l’intervalle des images-clés de la caméra.")
             return
         }
 
-        let item = AVPlayerItem(url: URL(string: "http://127.0.0.1:\(server.port)/index.m3u8")!)
-        item.preferredForwardBufferDuration = 1.0
-        let player = AVPlayer(playerItem: item)
-        player.automaticallyWaitsToMinimizeStalling = false
-        player.isMuted = isMuted
+        let player = VideoPipeline.previewPlayer(
+            url: URL(string: "http://127.0.0.1:\(server.port)/index.m3u8")!, isMuted: isMuted)
+        let item = player.currentItem!
         self.player = player
         player.play()
-        restartAttempt = 0
-        status = .playing
+        playbackMonitor = Task { @MainActor [weak self, weak player] in
+            let deadline = Date().addingTimeInterval(15)
+            while !Task.isCancelled {
+                guard let self, let player, myGeneration == self.generation else { return }
+                if item.status == .failed {
+                    self.stop()
+                    self.status = .failed("Le lecteur ne peut pas décoder le flux de la caméra.")
+                    return
+                }
+                if player.timeControlStatus == .playing && player.rate > 0 && player.currentTime().seconds > 0 {
+                    self.status = .playing
+                    self.restartAttempt = 0
+                } else if self.status == .starting && Date() > deadline {
+                    self.stop()
+                    self.status = .failed("Le lecteur n’a pas reçu d’image exploitable.")
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
     }
 
     func setMuted(_ value: Bool) {
@@ -122,13 +148,14 @@ final class LivePlayerService: ObservableObject {
     func stop() {
         intentionalStop = true
         generation += 1
+        playbackMonitor?.cancel()
+        playbackMonitor = nil
         player?.pause()
         player = nil
         if let process = ffmpeg, process.isRunning {
-            let pid = process.processIdentifier
             process.terminate()
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
-                if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             }
         }
         ffmpeg = nil
@@ -156,61 +183,23 @@ final class LivePlayerService: ObservableObject {
     private func isPlaylistReady(_ playlist: URL) -> Bool {
         guard let text = try? String(contentsOf: playlist, encoding: .utf8) else { return false }
         // A usable playlist references at least one media segment.
-        return text.contains(".ts") || text.contains(".m4s")
+        let dir = playlist.deletingLastPathComponent()
+        guard FileManager.default.fileExists(atPath: dir.appendingPathComponent("init.mp4").path) else { return false }
+        return text.split(separator: "\n").contains { line in
+            !line.hasPrefix("#") && line.hasSuffix(".m4s") &&
+                FileManager.default.fileExists(atPath: dir.appendingPathComponent(String(line)).path)
+        }
     }
 
-    private func makeFFmpeg(rtsp: String, dir: URL, profile: CameraPreviewProfile) -> Process {
+    private func makeFFmpeg(rtsp: String, dir: URL, profile: CameraPreviewProfile, source: VideoSource) -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffmpegPath)
-        var args = [
-            "-hide_banner", "-loglevel", "error",
-            "-fflags", "nobuffer+genpts",
-            "-flags", "low_delay",
-            "-rtsp_transport", "tcp",
-            "-timeout", "8000000",
-            "-i", rtsp,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-        ]
-        if profile == .main {
-            // Main has ~2s keyframes, so copy can segment fine — keeps full quality.
-            args += ["-c:v", "copy"]
-        } else {
-            // The sub stream has a very long GOP; copy would yield ~1 HLS segment
-            // every several seconds (no fast preview). Transcode with a 1s keyframe
-            // interval — trivial at 640×360 — for smooth, low-latency segments.
-            args += [
-                "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
-                "-pix_fmt", "yuv420p",
-                "-g", "10", "-keyint_min", "10",
-                "-force_key_frames", "expr:gte(t,n_forced*1)",
-            ]
-        }
-        args += [
-            "-c:a", "copy",
-            "-f", "hls",
-            "-hls_time", profile == .main ? "2" : "1",
-            "-hls_list_size", "6",
-            "-hls_flags", "delete_segments+append_list+omit_endlist+independent_segments",
-            "-hls_segment_type", "mpegts",
-            "-hls_segment_filename", dir.appendingPathComponent("seg_%05d.ts").path,
-            dir.appendingPathComponent("index.m3u8").path,
-        ]
-        process.arguments = args
-        process.environment = ProcessInfo.processInfo.environment
-        process.standardInput = Pipe()
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.arguments = VideoPipeline.previewArguments(rtspURL: rtsp, directory: dir, source: source, lowBandwidth: profile == .sub)
+        // No unread pipes: ffmpeg must never block because stderr filled up.
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         return process
-    }
-
-    /// Remove leftover session directories from a previous crash.
-    private func sweepOrphanSessions() {
-        let tmp = FileManager.default.temporaryDirectory
-        guard let entries = try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil) else { return }
-        for entry in entries where entry.lastPathComponent.hasPrefix("homelens-hls-") {
-            try? FileManager.default.removeItem(at: entry)
-        }
     }
 
     private func cleanup(dir: URL) {

@@ -29,8 +29,7 @@ Le helper est lancé et supervisé par la commande **`homelensctl homekit-run`**
 Ce que fait le helper :
 
 - **Publication** de l'accessoire « Front Door » en HAP sur le port `51826`, annoncé en Bonjour (`_hap._tcp`) sur le réseau. PIN d'appairage `031-45-154`. Une fois appairé, les appareils Apple Home le retrouvent tout seuls.
-- **Live (quand on regarde la caméra)** : Home négocie une résolution, le helper lance **ffmpeg** qui lit le flux RTSP et l'envoie en **SRTP** (chiffré) à l'appareil qui regarde. La vidéo part du **flux main (4K) réduit nettement** à la taille demandée (et non du petit flux sub agrandi). Tout le pipeline tourne sur le **Media Engine d'Apple Silicon** via VideoToolbox — **décodage matériel** (`-hwaccel videotoolbox`, frames `videotoolbox_vld`), **mise à l'échelle matérielle** (`scale_vt`, les frames restent sur le GPU), **encodage matériel** (`h264_videotoolbox`) → **~10 % de CPU** au lieu de ~35 %, net, sans chauffe. L'**audio** AAC de la caméra est transcodé en **Opus** ; le micro est annoncé, donc le son fonctionne.
-  - ⚠️ **La résolution du LIVE est choisie par Apple/Home** (souvent 720p–1080p, même en très bon Wi-Fi local — Apple plafonne le streaming en direct). On offre jusqu'au 4K, mais Home décide. La **vraie 4K, c'est pour l'enregistrement (HSV)**, pas le direct.
+- **Live** : Maison négocie la résolution et le débit H.264 ; ffmpeg utilise VideoToolbox pour décoder, réduire et encoder le flux principal. La cadence et les changements de paramètres demandés par Maison sont appliqués.
 - **HomeKit Secure Video (HSV)** : le helper garde en mémoire un *prebuffer* (les dernières secondes) en MP4 fragmenté. Quand l'ONVIF détecte un mouvement, Home demande l'enregistrement et le helper lui envoie l'init + les fragments (vidéo **+ audio réel**).
 - **Mouvement** : `homelensctl` s'abonne aux événements ONVIF de la caméra (pull-point) et transmet « motion/person » au helper, qui met à jour le capteur de mouvement HomeKit (déclencheur HSV).
 
@@ -39,26 +38,19 @@ Si le Mac a **deux cartes réseau sur le même sous-réseau** (ici `en0`=192.168
 
 ## 2. L'aperçu live dans l'app macOS
 
-`AVPlayer` ne lit pas le RTSP. L'app lance donc **ffmpeg** qui reconditionne le RTSP en **HLS** (segments de 1 s) dans un dossier temporaire, servi par un mini serveur HTTP local (loopback, `LocalHLSServer`), lu par `AVPlayer` (`LivePlayerService` + `LivePlayerView`).
+`AVPlayer` ne lit pas le RTSP. L'app lance donc **ffmpeg** qui reconditionne le RTSP en **HLS fMP4** (cible de 1 s, limitée par les images-clés en mode copie) dans un dossier temporaire, servi par un mini serveur HTTP local (loopback, `LocalHLSServer`), lu par `AVPlayer` (`LivePlayerService` + `LivePlayerView`).
 
-- **« Rapide »** = flux *sub* (faible latence). Le flux sub a un GOP très long, donc on le **ré-encode** avec une image-clé par seconde pour des segments fluides.
-- **« Qualité »** = flux *main* (pleine résolution), copié tel quel.
+- **« Rapide »** = flux *sub* (faible latence). Le flux sub a un GOP très long, donc on le **ré-encode avec VideoToolbox** avec une image-clé par seconde pour des segments fluides.
+- **« Qualité »** (par défaut) = flux *main* (pleine résolution), vidéo copiée en HLS fMP4 compatible H.264/HEVC.
 - Bouton 🔊 = mute/unmute (`AVPlayer.isMuted`).
 
 C'est totalement indépendant du pont HomeKit (aucun rapport avec l'iPhone ni le SRTP).
 
-## 3. Jusqu'où on monte en 4K
+## 3. Enregistrements 4K avec iOS/tvOS 27
 
-La caméra : **main = H.264 High 3840×2160 (4K) + AAC 16 kHz**, **sub = 640×360**.
+Le réglage **Originale / 4K** conserve le flux principal H.264 ou HEVC sans réencodage vidéo, y compris lorsque la configuration HAP historique indique encore 1080p. Il nécessite des concentrateurs en version 27. Le mode **Compatible**, conservé pour les anciennes configurations, respecte la qualité négociée par Maison et transcode avec VideoToolbox.
 
-Le pont **annonce à Home tout l'éventail jusqu'au 4K**, pour le live *et* l'enregistrement :
-`3840×2160 · 2560×1440 · 1920×1080 · 1280×720 · 640×360 · 320×180`.
-
-- **HSV (enregistrement)** : quand Home choisit le 4K natif, le helper **copie le flux 4K de la caméra sans le ré-encoder** → vraie 4K, qualité d'origine, et quasi aucun CPU (important car le prebuffer tourne en continu). Si Home choisit plus petit, il transcode à cette taille.
-- **Live** : Home choisit lui-même la résolution du direct (souvent ≤ 1080p — c'est Apple qui décide pour le streaming, pas nous). On lui offre quand même jusqu'au 4K.
-- **fps** : annoncé à 15 i/s. C'est volontaire — le 4K en temps réel reste fluide à 15 i/s ; monter à 25 risquerait de faire décrocher le transcodage quand il a lieu.
-
-Donc : **on donne tout (jusqu'au 4K) à Home**, et Home prend ce qu'il veut selon le contexte.
+Les propriétés réelles de la caméra sont détectées au démarrage. Le profil de l'aperçu n'impose aucune limite aux enregistrements. Les paramètres de négociation et le format de sortie sont journalisés séparément. Voir [l'audit vidéo](VIDEO_PIPELINE.md) pour les sources Apple, le support HEVC via HDS et les vérifications.
 
 ## 4. Choisir la carte réseau
 

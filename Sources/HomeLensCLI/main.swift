@@ -36,6 +36,15 @@ struct HomeLensCLI {
             let config = try store.load()
             let password = effectivePassword(for: config.camera, store: store)
             await ONVIFClient().runEventLoop(camera: config.camera, password: password, logger: logger)
+        case "recording-quality":
+            guard let quality = args.first, ["native", "compatible"].contains(quality) else {
+                throw CLIError.usage("Use recording-quality native (iOS/tvOS 27) or compatible.")
+            }
+            var config = try store.load()
+            config.camera.recordingQuality = quality
+            try store.save(config)
+            try writeHomeKitConfig(camera: config.camera, store: store)
+            print("Recording quality: \(quality). Restart the bridge to apply.")
         case "homekit-config":
             let config = try store.load()
             try writeHomeKitConfig(camera: config.camera, store: store)
@@ -56,7 +65,7 @@ struct HomeLensCLI {
         let username = parser.value(after: "--username") ?? "admin"
         let password = parser.value(after: "--password") ?? ProcessInfo.processInfo.environment["HOMELENS_PASSWORD"]
         let name = parser.value(after: "--name") ?? "Front Door"
-        let profile = CameraConfig.StreamProfile(rawValue: parser.value(after: "--profile") ?? "sub") ?? .sub
+        let profile = CameraConfig.StreamProfile(rawValue: parser.value(after: "--profile") ?? "main") ?? .main
 
         var camera = CameraConfig(name: name, host: host, username: username, streamProfile: profile)
         if let onvifPort = parser.int(after: "--onvif-port") {
@@ -157,6 +166,7 @@ struct HomeLensCLI {
               homelensctl test events-once
               homelensctl test hsv-prebuffer
               homelensctl run
+              homelensctl recording-quality native|compatible
               homelensctl homekit-config
               homelensctl homekit-run
               homelensctl doctor
@@ -184,7 +194,7 @@ struct HomeLensCLI {
                 .path,
             interfaceName: camera.networkInterface?.isEmpty == false ? camera.networkInterface : nil,
             video: video,
-            recording: HomeKitBridgeConfig.Recording(enabled: recordingEnabled),
+            recording: HomeKitBridgeConfig.Recording(enabled: recordingEnabled, quality: camera.recordingQuality ?? "compatible"),
             audio: HomeKitBridgeConfig.Audio(
                 enabled: ProcessInfo.processInfo.environment["HOMELENS_LIVE_AUDIO"] != "0"
             )
@@ -279,12 +289,10 @@ struct HomeLensCLI {
     }
 
     private static func homeKitVideoConfig(for camera: CameraConfig) -> HomeKitBridgeConfig.Video {
-        switch camera.streamProfile {
-        case .main:
-            HomeKitBridgeConfig.Video(width: 3840, height: 2160, fps: 15, maxBitrateKbps: 8192, packetSize: 1316, directCopy: true, qualityMode: "adaptive")
-        case .sub:
-            HomeKitBridgeConfig.Video(width: 1920, height: 1080, fps: 15, maxBitrateKbps: 2048, packetSize: 1316, directCopy: true, qualityMode: "balanced")
-        }
+        // Preview selection must never downgrade the HomeKit recording source.
+        // The helper probes the main stream instead of assuming this is its size.
+        HomeKitBridgeConfig.Video(width: 1920, height: 1080, fps: 30, maxBitrateKbps: 4000,
+                                  packetSize: 1316, directCopy: false, qualityMode: "adaptive")
     }
 
     private static func testHSVPrebuffer(store: ConfigStore, logger: ConsoleLogger) async throws {

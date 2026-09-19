@@ -65,7 +65,7 @@ Recommandé : une **clé API App Store Connect** (révocable, pas de mot de pass
 Ce script enchaîne automatiquement :
 1. `package_app.sh` — build auto-contenu (ffmpeg + Node.js intégrés)
 2. **signe** (Developer ID, *hardened runtime*) → **notarise** → **agrafe** l'app
-3. construit le **DMG** à partir de l'app signée
+3. construit le **DMG** à partir de l'app signée (`script/make_dmg.sh` : fenêtre, fond Retina et positions d'icônes écrits par `dmgbuild`, installé automatiquement dans `.build/dmgbuild-venv` ; l'icône et le fond sont rendus en SwiftUI par `script/make_icon.sh`)
 4. **signe + notarise + agrafe** le DMG
 5. crée la **release GitHub** `v0.1.0` avec le DMG en pièce jointe
 

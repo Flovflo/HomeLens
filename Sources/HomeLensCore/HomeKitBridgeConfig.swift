@@ -23,12 +23,16 @@ public struct HomeKitBridgeConfig: Codable, Sendable {
 
     public struct Recording: Codable, Sendable {
         public var enabled: Bool
+        public var quality: String?
         public var prebufferMs: Int
         public var fragmentMs: Int
+        /// Safety net only. The Home hub ends clips itself (close, or motion stop);
+        /// a 20 s accessory-side cap made every longer clip end with CANCELLED.
         public var maxSeconds: Int
 
-        public init(enabled: Bool = true, prebufferMs: Int = 4000, fragmentMs: Int = 4000, maxSeconds: Int = 20) {
+        public init(enabled: Bool = true, quality: String = "compatible", prebufferMs: Int = 4000, fragmentMs: Int = 4000, maxSeconds: Int = 600) {
             self.enabled = enabled
+            self.quality = quality
             self.prebufferMs = prebufferMs
             self.fragmentMs = fragmentMs
             self.maxSeconds = maxSeconds

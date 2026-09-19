@@ -24,6 +24,7 @@ struct CameraConfig: Codable, Identifiable, Equatable {
     var onvifPort: Int
     var streamProfile: StreamProfile
     var passwordStored: Bool
+    var recordingQuality: String?
     var networkInterface: String?
 
     init(
@@ -37,7 +38,8 @@ struct CameraConfig: Codable, Identifiable, Equatable {
         onvifPort: Int = 8000,
         streamProfile: StreamProfile = .main,
         passwordStored: Bool = false,
-        networkInterface: String? = nil
+        networkInterface: String? = nil,
+        recordingQuality: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -50,6 +52,7 @@ struct CameraConfig: Codable, Identifiable, Equatable {
         self.streamProfile = streamProfile
         self.passwordStored = passwordStored
         self.networkInterface = networkInterface
+        self.recordingQuality = recordingQuality
     }
 
     var selectedRTSPPath: String {

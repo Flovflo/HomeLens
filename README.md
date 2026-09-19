@@ -39,9 +39,9 @@ Apple's `HomeKit.framework` can **control** accessories — but it **cannot publ
 | | |
 |---|---|
 | 📺 **Live in Apple Home** | Real-time video **with audio** (Opus), streamed to iPhone / iPad / Apple TV. |
-| 🔴 **HomeKit Secure Video** | True HSV recording with **real camera audio**, triggered by ONVIF motion, up to **4K**. |
-| ⚡ **Apple-silicon optimized** | End-to-end **VideoToolbox** pipeline — hardware *decode → scale → encode* — at **~10% CPU**. |
-| 🎞️ **Zero-loss 4K passthrough** | H.264 cameras are **copied untouched** (no re-encode); H.265 cameras are **auto hardware-transcoded** to H.264 for HomeKit. |
+| 🔴 **HomeKit Secure Video** | HSV recording up to **native 4K on iOS/tvOS 27**, with camera audio when enabled in Home. |
+| ⚡ **Apple-silicon optimized** | **VideoToolbox** for live/compatible encoding; **no video encoding** for original-quality recordings. |
+| 🎞️ **Zero-loss 4K passthrough** | Original-quality recordings preserve **H.264 or H.265** video untouched. Live view uses hardware H.264 encoding. |
 | 🖥️ **Native macOS app** | SwiftUI preview with **Fast / Quality** sources, mute toggle, live status pills. |
 | 🩺 **End-to-end diagnostics** | One glance from **camera → relay → network/Apple → Home** — instantly see *where* it breaks. |
 | 🔌 **Multi-NIC aware** | Pick the network interface; smart routing fixes the classic "stream negotiates but stays black" bug. |
@@ -110,7 +110,9 @@ Open the **Home** app → **Add Accessory** → *More options* → **HomeLens / 
 031-45-154
 ```
 
-That's it. The camera appears in Home with live view, audio, and (with a hub) Secure Video.
+The camera appears in Home with live view, audio, and (with a hub) Secure Video. For original 4K recordings, update all Home hubs to version 27, then select **Enregistrement Maison → Originale / 4K → Appliquer au pont** in HomeLens settings. Existing configurations retain compatibility mode until you change this setting.
+
+See [the video pipeline audit and validation](docs/VIDEO_PIPELINE.md) for the exact quality policy and test results.
 
 ---
 
@@ -152,13 +154,13 @@ Pass `HOMELENS_PASSWORD` via the environment for unattended runs; set `HOMELENS_
 ## ❓ FAQ
 
 **Can it stream 4K live to my iPhone?**
-HomeKit *caps live view* well below 4K (typically 720p–1080p — Apple's call, not ours). HomeLens advertises up to 4K and serves a **sharp, hardware-scaled** image at whatever Home requests. **True 4K is for HomeKit Secure Video recordings.**
+Apple supports 4K on compatible cameras with iOS 27. HomeLens currently uses the established H.264 live transport at negotiated HD resolutions, and preserves native 4K for recordings with the Original / 4K setting. All Home hubs must also run version 27.
 
 **My camera is H.265 — is that supported?**
-Yes — HomeLens auto-detects it and **hardware-transcodes H.265 → H.264** (HomeKit only accepts H.264). For best quality and lowest CPU, set the camera's main stream to **H.264** (it's then copied with zero re-encode); to save bandwidth, lower the H.264 bitrate.
+Yes. Original-quality recordings preserve either H.264 or HEVC/H.265 on iOS/tvOS 27. Live view and compatibility-mode recordings use VideoToolbox to convert HEVC to H.264 when needed. The Mac preview plays either format. Restart the bridge after changing the camera codec.
 
 **Does it use a lot of CPU?**
-No. The live pipeline runs on the Apple Silicon media engine (~10% CPU for 4K→720p), and native-resolution HSV recording is a zero-CPU stream copy.
+Native recording copies compressed video without decoding or encoding it. Live view and compatibility mode use the Apple Silicon media engine; actual CPU usage depends on the camera and concurrent streams.
 
 **Multiple cameras?**
 HomeLens is intentionally focused on **one camera, done right**.
