@@ -17,21 +17,22 @@ import {
   VideoCodecType,
   uuid,
 } from "@homebridge/hap-nodejs";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createSocket } from "node:dgram";
-import { EventEmitter, once } from "node:events";
-import { createServer } from "node:net";
+import { EventEmitter } from "node:events";
 import { createInterface } from "node:readline";
 import { mkdirSync, readFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { dirname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 const DEFAULT_PIN = "031-45-154";
 const DEFAULT_USERNAME = "A2:44:5A:11:00:06";
 const FFMPEG_H264_PROFILES = ["baseline", "main", "high"];
-const H264_LEVEL_5_0 = 3;
-const H264_LEVEL_5_1 = 4;
-const FFMPEG_H264_LEVELS = ["3.1", "3.2", "4.0", "5.0", "5.1"];
+// HAP-NodeJS 2.1.7 defines only these three HAP level identifiers.
+// Values 3/4 are NOT documented mappings for AVC levels 5.0/5.1.
+const FFMPEG_H264_LEVELS = ["3.1", "3.2", "4.0"];
 
 const allocatedPorts = new Set();
 
@@ -56,21 +57,25 @@ function sanitizeForLog(value) {
     .replace(/(password=)[^&\s]+/gi, "$1***");
 }
 
-// Detect the camera's main-stream video codec ("h264" / "hevc") so we know
-// whether we can pass it through to HomeKit untouched (H.264) or must transcode
-// (H.265 → H.264, since HomeKit only accepts H.264).
-function probeVideoCodec(config) {
+// Probe actual main-stream properties, independently of the GUI preview profile.
+// A failed probe is unknown, never an invented H.264/4K source.
+export async function probeVideoSource(config) {
   const ffprobe = config.ffmpegPath.replace(/ffmpeg(\b|$)/, "ffprobe");
   try {
-    const out = execFileSync(ffprobe, [
+    const { stdout } = await promisify(execFile)(ffprobe, [
       "-v", "error", "-rtsp_transport", "tcp", "-timeout", "6000000",
+      "-analyzeduration", "1000000", "-probesize", "2000000",
       "-i", config.rtspUrl, "-select_streams", "v:0",
-      "-show_entries", "stream=codec_name", "-of", "default=nokey=1:noprint_wrappers=1",
-    ], { encoding: "utf8", timeout: 12_000, stdio: ["ignore", "pipe", "ignore"] });
-    const codec = (out || "").trim().toLowerCase();
-    return codec || "h264";
+      "-show_entries", "stream=codec_name,width,height,avg_frame_rate,r_frame_rate,profile,level,bit_rate",
+      "-of", "json",
+    ], { encoding: "utf8", timeout: 12_000, maxBuffer: 256 * 1024 });
+    const stream = JSON.parse(stdout).streams?.[0];
+    if (!stream?.width || !stream?.height || !stream?.codec_name) return undefined;
+    const [n, d] = (stream.avg_frame_rate || stream.r_frame_rate || "0/1").split("/").map(Number);
+    return { codec: stream.codec_name, width: stream.width, height: stream.height,
+      fps: d ? n / d : 0, profile: stream.profile, level: stream.level };
   } catch {
-    return "h264"; // assume H.264 (copy path) if the probe fails
+    return undefined;
   }
 }
 
@@ -104,12 +109,132 @@ function loadConfig() {
   config.audio.bitrateKbps ||= 24;
   config.audio.sampleRate ||= 16000;
   config.recording ||= {};
+  config.recording.quality ||= "compatible";
+  if (!["native", "compatible"].includes(config.recording.quality)) {
+    throw new Error("recording.quality must be native or compatible");
+  }
   config.recording.enabled = config.recording.enabled !== false;
   config.recording.prebufferMs ||= 4000;
   config.recording.fragmentMs ||= 4000;
-  config.recording.maxSeconds ||= 20;
+  // Safety net only: the hub closes clips itself. Ending a clip while motion is
+  // still active is never acknowledged; HAP-NodeJS then force-closes it with
+  // CANCELLED 12 s later (observed as 32 s clips with a 20 s cap).
+  config.recording.maxSeconds ||= 600;
   config.recording.stallTimeoutMs ||= 20_000;
   return config;
+}
+
+// ffmpeg forwards RTP as soon as the camera delivers it, and the camera delivers
+// in bursts (measured: up to 1.4 s without a packet, then a whole GOP). The
+// controller's jitter buffer is far smaller, so playback cut out every burst even
+// with smoothed timestamps. This relay sits between ffmpeg (loopback) and the
+// controller: video packets leave on their RTP-timestamp schedule plus a delay
+// that grows to the largest lateness observed (bounded); audio and RTCP follow
+// the same delay so A/V alignment is unchanged. SRTP packets are opaque here, so
+// nothing is re-encrypted or re-sequenced.
+export class PacedRelay {
+  constructor({ name, send, clockRate, delayProvider, initialDelayMs = 1000, maxDelayMs = 2500,
+    paceBytesPerMs = 5000, now = Date.now }) {
+    this.name = name;
+    // A 4K keyframe is ~730 KB = 600+ packets sharing one timestamp. Sent at once
+    // they overflow Wi-Fi/receiver queues (measured: 20-30 packets lost per burst),
+    // so packets are spread at 40 Mbit/s: one keyframe over ~150 ms, P-frames in ms.
+    this.paceBytesPerMs = paceBytesPerMs;
+    this.lastBytes = 0;
+    this.send = send;
+    this.clockRate = clockRate;
+    this.delayProvider = delayProvider;
+    this.delayMs = initialDelayMs;
+    this.maxDelayMs = maxDelayMs;
+    this.now = now;
+    this.queue = [];
+    this.forwarded = 0;
+    this.late = 0;
+    this.closed = false;
+  }
+
+  get currentDelayMs() {
+    return this.delayProvider ? this.delayProvider() : this.delayMs;
+  }
+
+  // Wall-clock instant at which this packet should leave.
+  scheduleTime(packet, isRTCP) {
+    const now = this.now();
+    if (isRTCP || !this.clockRate || packet.length < 12) return now + this.currentDelayMs;
+    const ts = packet.readUInt32BE(4);
+    if (this.baseWall === undefined) {
+      this.baseWall = now;
+      this.lastTs = ts;
+      this.offsetTicks = 0;
+    } else {
+      this.offsetTicks += (ts - this.lastTs) | 0; // signed delta survives 32-bit wrap
+      this.lastTs = ts;
+    }
+    const ideal = this.baseWall + (this.offsetTicks * 1000) / this.clockRate;
+    let target = ideal + this.currentDelayMs;
+    if (target < now) {
+      // The camera burst outran the jitter margin: send now and widen it.
+      this.late += 1;
+      if (!this.delayProvider) this.delayMs = Math.min(this.maxDelayMs, Math.round(now - ideal + 100));
+      target = now;
+    }
+    return target;
+  }
+
+  // Single FIFO queue and one timer: packets can never overtake each other
+  // (per-packet timers with different durations reordered same-frame packets).
+  push(packet, isRTCP = false) {
+    if (this.closed) return;
+    const spacing = this.lastBytes / this.paceBytesPerMs;
+    const target = Math.max(this.scheduleTime(packet, isRTCP), (this.lastTarget || 0) + spacing);
+    this.lastTarget = target;
+    this.lastBytes = packet.length;
+    this.queue.push({ packet, isRTCP, target });
+    this.arm();
+  }
+
+  arm() {
+    if (this.timer || this.closed || !this.queue.length) return;
+    const wait = Math.max(0, this.queue[0].target - this.now());
+    this.timer = setTimeout(() => this.flush(), wait);
+  }
+
+  flush() {
+    this.timer = undefined;
+    if (this.closed) return;
+    const now = this.now();
+    while (this.queue.length && this.queue[0].target <= now) {
+      const { packet, isRTCP } = this.queue.shift();
+      this.forwarded += 1;
+      this.send(packet, isRTCP);
+    }
+    this.arm();
+  }
+
+  close() {
+    this.closed = true;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    this.queue.length = 0;
+  }
+}
+
+function openRelaySockets(relay, port) {
+  const sockets = [];
+  for (const [p, isRTCP] of [[port, false], [port + 1, true]]) {
+    const socket = createSocket("udp4");
+    socket.on("error", (error) => log("warning", "stream", `${relay.name} relay socket error: ${error.message}`));
+    socket.on("message", (message) => relay.push(message, isRTCP));
+    socket.bind(p, "127.0.0.1", () => {
+      // A whole 4K GOP (~1.5 MB) can land within ~150 ms; the default receive
+      // buffer would drop packets, which the controller sees as corrupt frames.
+      for (const bytes of [4, 2, 1].map((mb) => mb * 1024 * 1024)) {
+        try { socket.setRecvBufferSize(bytes); break; } catch { /* try smaller */ }
+      }
+    });
+    sockets.push(socket);
+  }
+  return sockets;
 }
 
 function nextPort() {
@@ -212,25 +337,40 @@ function usableLocalStreamAddress(request, targetAddress) {
   return routed || source;
 }
 
-function liveBitrateKbps(video) {
-  const negotiated = video.max_bit_rate || 0;
-  const pixels = (video.width || 0) * (video.height || 0);
-  let target = 800;
-  if (pixels >= 3840 * 2160) {
-    target = 12000;
-  } else if (pixels >= 2560 * 1440) {
-    target = 6000;
-  } else if (pixels >= 1920 * 1080) {
-    target = 4000;
-  } else if (pixels >= 1280 * 720) {
-    target = 2500;
-  } else if (pixels >= 640 * 360) {
-    target = 1000;
-  }
-  // Bias toward sharpness on a good LAN: give at least our target, and honor a
-  // higher value if HomeKit asks for more. (HomeKit often negotiates a very low
-  // ceiling, which on its own yields a soft image.)
-  return Math.max(negotiated, target);
+// Reolink RTSP timestamps follow the camera's send queue, not capture time: a
+// large 4K keyframe is followed by a ~1.6 s timestamp jump, then a burst of
+// P-frames spaced ~20 ms apart (measured on a CX810, see docs/VIDEO_PIPELINE.md).
+// Players honouring those timestamps freeze and then race, and HomeKit reads the
+// jitter as a poor network and renegotiates 360p at 132 kbit/s. Re-time video
+// packets before decoding or copying: nominal cadence for the first K frames,
+// then the mean output rate, steered toward the source clock with gain 1/K so
+// bursts are spread out while long-term audio alignment is preserved. The state
+// is anchored on the OUTPUT (origin 0 when the first packet has no timestamp,
+// which is the case for the first RTSP keyframe) so a missing or absurd input
+// timestamp can never poison the sequence. Packets are never dropped, reordered
+// or re-encoded. Must precede -i (input-side bitstream filter).
+export function smoothedTimestampArgs(fps) {
+  const nominal = Number((fps > 0 ? fps : 25).toFixed(3));
+  const k = Math.min(100, Math.max(20, Math.round(nominal * 2)));
+  const missing = (v) => `gt(isnan(${v})+eq(${v},NOPTS),0)`;
+  const origin = `if(${missing("STARTPTS")},0,STARTPTS)`;
+  const mean = `if(lt(N,${k}),1/${nominal}/TB,(PREV_OUTPTS-${origin})/N)`;
+  const steer = `if(${missing("PTS")},${mean}/${k},(PTS-PREV_OUTPTS)/${k})`;
+  const expr = `if(eq(N,0),${origin},max(PREV_OUTPTS+1,PREV_OUTPTS+${steer}+${k - 1}/${k}*${mean}))`;
+  return ["-bsf:v", `setts=ts='${expr}'`];
+}
+
+export function liveBitrateKbps(video) {
+  // HomeKit's negotiated value is a ceiling, particularly important off-LAN.
+  return Math.max(1, Math.round(video.max_bit_rate || 1600));
+}
+
+export function nativeLiveCopy(config, session) {
+  // Original quality is explicitly enabled for Home 27. As with other HAP
+  // bridges, legacy requested dimensions need not match the H.264 bitstream.
+  // Keep remote sessions and HEVC sources on the negotiated H.264 encoder path.
+  return config.recording.quality === "native" && config.sourceVideo?.codec === "h264"
+    && isIPv4(session.address) && sameIPv4Slash24(session.address, session.localAddress);
 }
 
 class ReolinkStreamingDelegate {
@@ -240,19 +380,14 @@ class ReolinkStreamingDelegate {
     this.ongoingSessions = new Map();
     this.recordingActive = false;
     this.recordingConfiguration = undefined;
-    this.recordingServer = undefined;
     this.prebuffer = undefined;
     this.controller = undefined;
     this.isMotionActive = () => false;
   }
 
-  // Whether HomeKit Secure Video should capture the camera's audio. HomeKit's
-  // RecordingAudioActive characteristic defaults to 0 (off) until the user flips
-  // "record audio" in the Home app, which would leave clips silent. Since audio
-  // is an explicit product goal, drive it from the HomeLens config instead
-  // (on by default; set audio.enabled=false to opt out).
   isRecordingAudioActive() {
-    return this.config.audio.enabled !== false;
+    return this.config.audio.enabled !== false
+      && this.controller?.recordingManagement?.recordingAudioActive === true;
   }
 
   handleSnapshotRequest(request, callback) {
@@ -501,45 +636,45 @@ class ReolinkStreamingDelegate {
     }
 
     const video = { ...session.video, ...request.video };
+    if (nativeLiveCopy(this.config, session)) {
+      session.video = video;
+      log("info", "stream", "keeping original H.264 LAN stream on legacy reconfigure", {
+        requested: `${video.width}x${video.height}@${video.fps}`,
+        negotiatedBitrateKbps: video.max_bit_rate,
+        output: this.config.sourceVideo,
+      });
+      callback();
+      return;
+    }
     log("info", "stream", "HomeKit requested stream reconfigure", {
       from: `${session.video.width}x${session.video.height}@${session.video.fps}`,
       to: `${video.width}x${video.height}@${video.fps}`,
       maxBitrate: video.max_bit_rate,
-      action: "kept-current-stream",
+      action: "restart-with-negotiated-settings",
     });
-    callback();
+    session.process.kill("SIGKILL");
+    this.launchStreamProcess(request.sessionID, session, video, callback, true);
   }
 
   launchStreamProcess(sessionID, session, video, callback, isReconfigure) {
     const negotiatedProfile = FFMPEG_H264_PROFILES[video.profile] ?? "main";
-    const profile = negotiatedProfile === "high" ? "main" : negotiatedProfile;
+    const profile = negotiatedProfile;
     const level = ffmpegH264Level(video.width, video.height, FFMPEG_H264_LEVELS[video.level] ?? "4.0");
     const mtu = Math.min(video.mtu || this.config.video.packetSize, this.config.video.packetSize, 1200);
     const bitrate = liveBitrateKbps(video);
-    const fps = Math.min(video.fps || this.config.video.fps, this.config.video.fps || 15);
+    const fps = video.fps || 15;
     const keyframeInterval = Math.max(10, fps);
-    const source = this.streamSourceForResolution(video.width, video.height);
-    const canDirectCopy = this.config.video.directCopy &&
-      this.config.sourceVideoCodec === "h264" &&
-      source.name === "main" &&
-      Math.abs(video.width - this.config.video.width) <= 16 &&
-      Math.abs(video.height - this.config.video.height) <= 16;
+    const copy = nativeLiveCopy(this.config, session);
+    const source = copy ? { name: "main", url: this.config.rtspUrl }
+      : this.streamSourceForResolution(video.width, video.height);
     const args = [
       "-hide_banner",
       "-loglevel",
       process.env.HOMELENS_FFMPEG_DEBUG === "1" ? "info" : "warning",
     ];
-    if (!canDirectCopy) {
-      // Decode on the Apple Silicon media engine so the whole transcode pipeline
-      // (decode → scale_vt → h264_videotoolbox encode) stays in hardware (~10% CPU,
-      // sharp downscale from the 4K main stream).
-      args.push("-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld");
-    }
+    if (!copy) args.push("-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld");
+    const sourceInfo = source.name === "main" ? this.config.sourceVideo : this.config.sourceSubVideo;
     args.push(
-      "-fflags",
-      "nobuffer",
-      "-flags",
-      "low_delay",
       "-analyzeduration",
       "1000000",
       "-probesize",
@@ -548,6 +683,7 @@ class ReolinkStreamingDelegate {
       "8000000",
       "-rtsp_transport",
       "tcp",
+      ...smoothedTimestampArgs(sourceInfo?.fps),
       "-i",
       source.url,
       "-an",
@@ -557,36 +693,30 @@ class ReolinkStreamingDelegate {
       "0:v:0",
     );
 
-    if (canDirectCopy) {
-      args.push(
-        "-c:v",
-        "copy",
-        "-bsf:v",
-        "h264_mp4toannexb",
-      );
-    } else {
-      // Hardware scale + encode on the Apple media engine (frames stay as
-      // VideoToolbox surfaces end-to-end). scale_vt keeps the 4K main stream's
-      // aspect (camera and all HomeKit sizes are 16:9, so no padding needed).
-      args.push(
-        "-vf",
-        `scale_vt=w=${video.width}:h=${video.height}`,
-        "-c:v",
-        "h264_videotoolbox",
-        "-realtime",
-        "1",
-        "-b:v",
-        `${bitrate}k`,
-        "-maxrate",
-        `${bitrate}k`,
-        "-profile:v",
-        profile,
-        "-g",
-        String(keyframeInterval),
-        "-force_key_frames",
-        `expr:gte(t,n_forced*1)`,
-      );
-    }
+    if (copy) args.push("-c:v", "copy");
+    else args.push(
+      "-vf",
+      hardwareVideoFilter(video.width, video.height, fps, source.name === "main" ? this.config.sourceVideo : undefined),
+      "-c:v",
+      "h264_videotoolbox",
+      "-realtime",
+      "1",
+      "-b:v",
+      `${bitrate}k`,
+      "-maxrate",
+      `${bitrate}k`,
+      "-profile:v", profile,
+      "-level:v", level,
+      "-coder", profile === "baseline" ? "cavlc" : "cabac",
+      "-bf", "0",
+      "-r", String(fps),
+      "-fps_mode", "cfr",
+      "-allow_sw", "0",
+      "-g",
+      String(keyframeInterval),
+      "-force_key_frames",
+      `expr:gte(t,n_forced*1)`,
+    );
 
     args.push(
       "-payload_type",
@@ -606,17 +736,20 @@ class ReolinkStreamingDelegate {
     }
 
     const protocol = isSecureRTP ? "srtp" : "rtp";
+    session.relayVideoPort ??= nextPort();
     const destinationQuery = new URLSearchParams({
-      rtcpport: String(session.videoPort),
+      rtcpport: String(session.relayVideoPort + 1),
       pkt_size: String(mtu),
     });
-    args.push(`${protocol}://${session.address}:${session.videoPort}?${destinationQuery.toString()}`);
+    args.push(`${protocol}://127.0.0.1:${session.relayVideoPort}?${destinationQuery.toString()}`);
 
     const audio = session.audio;
 
     log("info", "stream", `${isReconfigure ? "reconfiguring" : "starting"} stream ${video.width}x${video.height}@${video.fps}`, {
-      mode: canDirectCopy ? "copy" : "transcode",
+      mode: copy ? "copy" : "videotoolbox",
+      output: copy ? this.config.sourceVideo : { width: video.width, height: video.height, fps, bitrate },
       source: source.name,
+      timestamps: "smoothed",
       negotiatedProfile,
       profile,
       level,
@@ -674,6 +807,16 @@ class ReolinkStreamingDelegate {
         });
       });
     }
+    session.rtcpSocket = rtcpSocket;
+    session.audioRtcpSocket = audioRtcpSocket;
+    if (!session.videoRelay) {
+      session.videoRelay = new PacedRelay({
+        name: "video",
+        clockRate: 90000,
+        send: (packet) => rtcpSocket.send(packet, session.videoPort, session.address),
+      });
+      session.relaySockets = openRelaySockets(session.videoRelay, session.relayVideoPort);
+    }
     const ffmpeg = spawn(this.config.ffmpegPath, args, { env: process.env });
     const audioProcess = audio && !session.audioProcess
       ? this.launchAudioProcess(session, audio)
@@ -695,7 +838,7 @@ class ReolinkStreamingDelegate {
         stderrTail = `${stderrTail}\n${text}`.slice(-4000);
       }
       if (process.env.HOMELENS_FFMPEG_DEBUG === "1" && text) {
-        log("debug", "ffmpeg", text);
+        log("debug", "ffmpeg", sanitizeForLog(text));
       }
       if (!callbackSent) {
         callbackSent = true;
@@ -719,6 +862,7 @@ class ReolinkStreamingDelegate {
         allocatedPorts.delete(session.localVideoRTCPPort);
         allocatedPorts.delete(session.localAudioPort);
         allocatedPorts.delete(session.localAudioRTCPPort);
+        this.closeRelays(activeSession);
         activeSession.rtcpSocket?.close();
         activeSession.audioRtcpSocket?.close();
         activeSession.audioProcess?.kill("SIGKILL");
@@ -768,8 +912,9 @@ class ReolinkStreamingDelegate {
     const requestedFrameMs = audio.packet_time || 20;
     const frameDurationMs = validOpusFrameMs.includes(requestedFrameMs) ? requestedFrameMs : 20;
     const audioProtocol = session.audioCryptoSuite !== SRTPCryptoSuites.NONE ? "srtp" : "rtp";
+    session.relayAudioPort ??= nextPort();
     const audioDestinationQuery = new URLSearchParams({
-      rtcpport: String(session.audioPort),
+      rtcpport: String(session.relayAudioPort + 1),
       // HomeKit's audio RTP packet size. One Opus frame easily fits in 188 bytes at
       // 24kbps mono; ffmpeg then sends one frame per packet (RFC 7587) instead of
       // bundling several into a 1200-byte burst that overruns iOS's audio buffer.
@@ -830,7 +975,15 @@ class ReolinkStreamingDelegate {
         : "AES_CM_128_HMAC_SHA1_80";
       args.push("-srtp_out_suite", audioSuite, "-srtp_out_params", session.audioSRTP.toString("base64"));
     }
-    args.push(`${audioProtocol}://${session.address}:${session.audioPort}?${audioDestinationQuery.toString()}`);
+    args.push(`${audioProtocol}://127.0.0.1:${session.relayAudioPort}?${audioDestinationQuery.toString()}`);
+    if (!session.audioRelay) {
+      session.audioRelay = new PacedRelay({
+        name: "audio",
+        send: (packet) => session.audioRtcpSocket.send(packet, session.audioPort, session.address),
+        delayProvider: () => session.videoRelay?.delayMs ?? 900,
+      });
+      session.relaySockets.push(...openRelaySockets(session.audioRelay, session.relayAudioPort));
+    }
 
     log("info", "stream", "starting audio stream", {
       audio: `${audio.codec || "unknown"} ${negotiatedKHz}kHz ${audioChannels}ch`,
@@ -861,6 +1014,16 @@ class ReolinkStreamingDelegate {
     return ffmpeg;
   }
 
+  closeRelays(session) {
+    for (const port of [session.relayVideoPort, session.relayAudioPort]) {
+      if (port !== undefined) { allocatedPorts.delete(port); allocatedPorts.delete(port + 1); }
+    }
+    session.videoRelay?.close();
+    session.audioRelay?.close();
+    for (const socket of session.relaySockets || []) socket.close();
+    session.relaySockets = [];
+  }
+
   stopStream(sessionID, reason = "internal") {
     const session = this.ongoingSessions.get(sessionID);
     if (!session) {
@@ -870,7 +1033,12 @@ class ReolinkStreamingDelegate {
       sessionID,
       reason,
       rtcpPackets: session.rtcpPacketCount || 0,
+      relay: session.videoRelay ? {
+        delayMs: session.videoRelay.delayMs, forwarded: session.videoRelay.forwarded, late: session.videoRelay.late,
+        audioForwarded: session.audioRelay?.forwarded,
+      } : undefined,
     });
+    this.closeRelays(session);
     allocatedPorts.delete(session.localVideoPort);
     allocatedPorts.delete(session.localVideoRTCPPort);
     allocatedPorts.delete(session.localAudioPort);
@@ -897,12 +1065,10 @@ class ReolinkStreamingDelegate {
     this.recordingConfiguration = configuration;
     if (configuration) {
       const res = configuration.videoCodec?.resolution;
-      const isNative4K = res && res[0] === this.config.video.width && res[1] === this.config.video.height;
       log("info", "hsv", "recording configuration selected by HomeKit", {
         resolution: res ? `${res[0]}x${res[1]}@${res[2]}` : "?",
-        is4K: Boolean(res && res[0] >= 3840),
-        usesNativeResolution: Boolean(isNative4K),
-        bitrateKbps: configuration.videoCodec?.parameters?.bitRate,
+        output: recordingPlan(this.config, configuration),
+        negotiatedBitrateKbps: configuration.videoCodec?.parameters?.bitRate,
       });
     } else {
       log("info", "hsv", "recording configuration cleared");
@@ -932,46 +1098,14 @@ class ReolinkStreamingDelegate {
       return;
     }
 
-    const server = new MP4FragmentServer(this.config, this.recordingConfiguration, this.isRecordingAudioActive());
-    this.recordingServer = server;
-    let yieldedFragments = 0;
-    let pending = [];
-    signal?.addEventListener("abort", () => server.destroy(), { once: true });
-    log("warning", "hsv", `prebuffer not ready, using on-demand recording stream ${streamId}`);
-    try {
-      await server.start();
-      for await (const box of server.generator()) {
-        pending.push(box.header, box.data);
-        if (box.type !== "moov" && box.type !== "mdat") {
-          continue;
-        }
-
-        yieldedFragments += box.type === "mdat" ? 1 : 0;
-        const timedOut = Date.now() > maxUntil;
-        const motionStopped = yieldedFragments > 1 && !this.isMotionActive();
-        const isLast = Boolean(signal?.aborted || timedOut || motionStopped);
-        yield {
-          data: Buffer.concat(pending),
-          isLast,
-        };
-        pending = [];
-        if (isLast) {
-          log("info", "hsv", `ending recording stream ${streamId}`);
-          break;
-        }
-      }
-    } finally {
-      server.destroy();
-      if (this.recordingServer === server) {
-        this.recordingServer = undefined;
-      }
-    }
+    if (signal?.aborted) return;
+    // Do not open a second competing RTSP/encoder session when the supervised
+    // prebuffer is recovering; fail promptly and let HomeKit retry.
+    throw new Error("Recording prebuffer is not ready; retry after camera reconnects.");
   }
 
   closeRecordingStream(streamId, reason) {
     log("info", "hsv", `close recording stream ${streamId} reason=${reason ?? "unknown"}`);
-    this.recordingServer?.destroy();
-    this.recordingServer = undefined;
   }
 
   acknowledgeStream(streamId) {
@@ -982,6 +1116,9 @@ class ReolinkStreamingDelegate {
   ensureRecordingPrebuffer() {
     if (!this.recordingActive || !this.recordingConfiguration) {
       return undefined;
+    }
+    if (this.prebuffer && (this.prebuffer.destroyed || this.prebuffer.audioActive !== this.isRecordingAudioActive())) {
+      this.stopRecordingPrebuffer();
     }
     if (!this.prebuffer) {
       this.prebuffer = new MP4Prebuffer(this.config, this.recordingConfiguration, this.isRecordingAudioActive());
@@ -996,113 +1133,69 @@ class ReolinkStreamingDelegate {
   }
 }
 
-function recordingFFmpegArgs(config, recordingConfiguration, outputURL, audioActive) {
+// Drop surplus frames BEFORE scaling/encoding, while retaining VT surfaces.
+// Preserve the source's display aspect ratio for non-16:9 cameras as well.
+export function hardwareVideoFilter(width, height, fps, source) {
+  const sar = source?.width && source?.height
+    ? `${source.width * height}/${source.height * width}` : "1";
+  return `fps=${fps},scale_vt=w=${width}:h=${height},setsar=${sar}`;
+}
+
+export function recordingPlan(config, recordingConfiguration) {
+  const source = config.sourceVideo;
+  // iOS/tvOS 27 accepts native H.264/HEVC fMP4 through legacy HDS, including
+  // when the legacy selected configuration still says 1080p/H.264. This is an
+  // explicit compatibility policy, not a new (invented) HAP codec identifier.
+  // See docs/VIDEO_PIPELINE.md for Apple and Scrypted's implementation evidence.
+  const copy = config.recording.quality === "native"
+    && ["h264", "hevc"].includes(source?.codec);
+  const [width, height, fps] = recordingConfiguration.videoCodec.resolution;
+  return copy ? { ...source, copy: true }
+    : { width, height, fps, codec: "h264", copy: false };
+}
+
+export function recordingFFmpegArgs(config, recordingConfiguration, outputURL, audioActive) {
+  const plan = recordingPlan(config, recordingConfiguration);
   const video = recordingConfiguration.videoCodec;
   const audio = recordingConfiguration.audioCodec;
-  const width = video.resolution[0];
-  const height = video.resolution[1];
-  const fps = video.resolution[2];
+  const [width, height, fps] = video.resolution;
   const profile = FFMPEG_H264_PROFILES[video.parameters.profile] ?? "main";
   const level = ffmpegH264Level(width, height, FFMPEG_H264_LEVELS[video.parameters.level] ?? "4.0");
   const bitrate = video.parameters.bitRate || config.video.maxBitrateKbps;
-  const fragmentSeconds = Math.max(1, recordingConfiguration.mediaContainerConfiguration.fragmentLength / 1000);
-
-  // HomeKit always wants H.264. Copy the camera's stream untouched only when it
-  // is ALREADY H.264 AND the recording size matches the camera's native size.
-  // An H.265/HEVC camera (or a smaller negotiated size) must be transcoded to
-  // H.264 — done entirely on the Apple media engine (HW decode + HW encode).
-  const canCopyVideo = width === config.video.width
-    && height === config.video.height
-    && config.sourceVideoCodec === "h264";
-
+  const fragmentSeconds = Math.max(0.5, recordingConfiguration.mediaContainerConfiguration.fragmentLength / 1000);
+  const keyframeSeconds = Math.min(fragmentSeconds, (video.parameters.iFrameInterval || fragmentSeconds * 1000) / 1000);
   const args = [
-    "-hide_banner",
-    "-loglevel",
-    process.env.HOMELENS_FFMPEG_DEBUG === "1" ? "info" : "warning",
-    "-timeout",
-    "8000000",
-    "-rtsp_transport",
-    "tcp",
+    "-hide_banner", "-loglevel", process.env.HOMELENS_FFMPEG_DEBUG === "1" ? "info" : "warning",
+    "-timeout", "8000000", "-rtsp_transport", "tcp",
+    "-analyzeduration", "1000000", "-probesize", "2000000",
   ];
-  if (!canCopyVideo) {
-    // Hardware-decode the source (handles H.265 too) so the transcode stays on
-    // the media engine instead of doing software HEVC decode of a 4K stream.
-    args.push("-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld");
-  }
-  args.push("-i", config.rtspUrl, "-map", "0:v:0");
-
-  // Record the camera's real audio when HomeKit keeps "record audio" enabled.
-  // The trailing "?" makes the audio map optional so a camera without an audio
-  // track never aborts the recording.
-  if (audioActive) {
-    args.push("-map", "0:a:0?");
-  }
-
+  if (!plan.copy) args.push("-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld");
+  args.push(...smoothedTimestampArgs(config.sourceVideo?.fps), "-i", config.rtspUrl, "-map", "0:v:0");
+  if (audioActive) args.push("-map", "0:a:0?");
   args.push("-sn", "-dn");
-
-  if (canCopyVideo) {
-    // Native H.264 at native size → pass the original stream through untouched
-    // (true 4K, near-zero CPU for the always-on prebuffer).
+  if (plan.copy) {
     args.push("-c:v", "copy");
-  } else {
-    if (width !== config.video.width || height !== config.video.height) {
-      args.push("-vf", `scale_vt=w=${width}:h=${height}`);
-    }
-    args.push(
-      "-c:v",
-      "h264_videotoolbox",
-      "-realtime",
-      "1",
-      "-b:v",
-      `${bitrate}k`,
-      "-maxrate",
-      `${bitrate}k`,
-      "-profile:v",
-      profile,
-      // Set the GOP ceiling just above the source GOP and force a keyframe at each
-      // fragment boundary, so every HKSV fragment is ~fragmentLength and starts
-      // with an IDR. (force_key_frames does the alignment; -g keeps VideoToolbox's
-      // short default GOP from spraying extra keyframes → tiny fragments + wasted
-      // bitrate.) Verified: clean 4s IDR-led fragments.
-      "-g",
-      String(Math.round(fragmentSeconds * 30)),
-      "-force_key_frames",
-      `expr:gte(t,n_forced*${fragmentSeconds})`,
-    );
-  }
-
-  if (audioActive) {
-    // HKSV requires 32/48kHz AAC-LC/ELD; the Reolink source is 16kHz AAC-LC, so
-    // ffmpeg resamples to the negotiated rate. Match the live path's gentle
-    // resampler (soft compensation) to keep A/V in sync without warble.
-    args.push(
-      "-af",
-      "aresample=async=1:min_hard_comp=0.100000:first_pts=0",
-      "-c:a",
-      "aac",
-      "-profile:a",
-      audio.type === AudioRecordingCodecType.AAC_ELD ? "aac_eld" : "aac_low",
-      "-b:a",
-      `${audio.bitrate || 24}k`,
-      "-ac",
-      String(audio.audioChannels || 1),
-      "-ar",
-      String(audioSampleRate(audio.samplerate)),
-    );
-  } else {
-    args.push("-an");
-  }
-
-  args.push(
-    "-f",
-    "mp4",
-    "-fflags",
-    "+genpts",
-    "-movflags",
-    "frag_keyframe+empty_moov+default_base_moof",
-    outputURL,
+    if (plan.codec === "hevc") args.push("-tag:v", "hvc1");
+  } else args.push(
+    "-vf", hardwareVideoFilter(width, height, fps, config.sourceVideo),
+    "-c:v", "h264_videotoolbox", "-allow_sw", "0", "-realtime", "1",
+    "-b:v", `${bitrate}k`, "-maxrate", `${bitrate}k`, "-bufsize", `${bitrate * 2}k`,
+    "-profile:v", profile, "-level:v", level,
+    "-coder", profile === "baseline" ? "cavlc" : "cabac", "-bf", "0",
+    "-r", String(fps), "-fps_mode", "cfr",
+    "-g", String(Math.max(1, Math.round(keyframeSeconds * fps))),
+    "-force_key_frames", `expr:gte(t,n_forced*${keyframeSeconds})`,
   );
-
+  if (audioActive) {
+    args.push(
+      "-af", "aresample=async=1:min_hard_comp=0.100000:first_pts=0",
+      "-c:a", "aac", "-profile:a", audio.type === AudioRecordingCodecType.AAC_ELD ? "aac_eld" : "aac_low",
+      "-b:a", `${audio.bitrate || 24}k`, "-ac", String(audio.audioChannels || 1),
+      "-ar", String(audioSampleRate(audio.samplerate)),
+    );
+  } else args.push("-an");
+  args.push("-f", "mp4", "-fflags", "+genpts",
+    "-movflags", "frag_keyframe+empty_moov+default_base_moof", outputURL);
   return args;
 }
 
@@ -1120,133 +1213,47 @@ function audioSampleRate(sampleRate) {
 }
 
 function ffmpegH264Level(width, height, negotiatedLevel) {
-  const pixels = width * height;
-  if (pixels >= 3840 * 2160) {
-    return "5.1";
-  }
-  if (pixels >= 2560 * 1440) {
-    return "5.0";
-  }
+  // Encoder levels are AVC levels, not HAP enum values.
+  if (width * height > 1920 * 1080) return "5.1";
   return negotiatedLevel;
 }
 
-function videoResolutions(config) {
-  const fps = config.video.fps || 15;
-  let candidates;
-  switch (config.video.qualityMode) {
-    case "high":
-      candidates = [
-        [config.video.width, config.video.height, fps],
-        [3840, 2160, fps],
-        [2560, 1440, fps],
-        [1920, 1080, fps],
-      ];
-      break;
-    case "balanced":
-      candidates = [
-        [1920, 1080, fps],
-        [1280, 720, fps],
-        [640, 360, fps],
-        [320, 180, fps],
-      ];
-      break;
-    case "adaptive":
-    default:
-      candidates = [
-        [config.video.width, config.video.height, fps],
-        [3840, 2160, fps],
-        [2560, 1440, fps],
-        [1920, 1080, fps],
-        [1280, 720, fps],
-        [640, 360, fps],
-        [320, 180, fps],
-      ];
-      break;
+export function videoResolutions(config) {
+  const source = config.sourceVideo;
+  const sizes = [[1920, 1080], [1280, 720]];
+  if (config.recording.quality === "native" && source) {
+    sizes.unshift([source.width, source.height]);
   }
   const seen = new Set();
-  return candidates
-    .filter(([width, height]) => width <= config.video.width && height <= config.video.height)
-    .filter((resolution) => {
-      const key = resolution.join("x");
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
+  return sizes.filter(([w, h]) => {
+    const key = `${w}x${h}`;
+    if (seen.has(key) || (source && (w > source.width || h > source.height))) return false;
+    seen.add(key); return true;
+  }).flatMap(([w, h]) => [[w, h, 30], [w, h, 24], [w, h, 15]]);
 }
 
-function h264Levels(config) {
-  const levels = [H264Level.LEVEL3_1, H264Level.LEVEL3_2, H264Level.LEVEL4_0];
-  if ((config.video.width * config.video.height) >= 2560 * 1440) {
-    levels.push(H264_LEVEL_5_0);
-  }
-  if ((config.video.width * config.video.height) >= 3840 * 2160) {
-    levels.push(H264_LEVEL_5_1);
-  }
-  return levels;
+function h264Levels() {
+  return [H264Level.LEVEL3_1, H264Level.LEVEL3_2, H264Level.LEVEL4_0];
 }
 
-function liveH264Levels(config) {
-  return h264Levels(config);
-}
+function liveH264Levels() { return h264Levels(); }
 
 function liveVideoResolutions(config) {
-  const fps = config.video.fps || 15;
-  const candidates = [
-    [config.video.width, config.video.height, fps],
-    [3840, 2160, fps],
-    [2560, 1440, fps],
-    [1920, 1080, fps],
-    [1280, 720, fps],
-    [640, 360, fps],
-    [320, 180, fps],
-  ];
-  const seen = new Set();
-  return candidates
-    .filter(([width, height]) => width <= config.video.width && height <= config.video.height)
-    .filter((resolution) => {
-      const key = resolution.join("x");
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
+  return [...videoResolutions({ ...config, recording: { quality: "compatible" } }), [640, 360, 15], [320, 240, 15]];
 }
 
-function selfTestRecordingConfiguration(config) {
+export function selfTestRecordingConfiguration(config) {
   return {
     videoCodec: {
-      resolution: [config.video.width, config.video.height, config.video.fps],
-      parameters: {
-        profile: H264Profile.HIGH,
-        level: h264LevelForPixels(config.video.width, config.video.height),
-        bitRate: config.video.maxBitrateKbps,
-      },
+      resolution: [1920, 1080, 15],
+      parameters: { profile: H264Profile.HIGH, level: H264Level.LEVEL4_0,
+        bitRate: 1600, iFrameInterval: 4000 },
     },
-    audioCodec: {
-      type: AudioRecordingCodecType.AAC_LC,
-      samplerate: AudioRecordingSamplerate.KHZ_48,
-      bitrate: 24,
-      audioChannels: 1,
-    },
-    mediaContainerConfiguration: {
-      type: MediaContainerType.FRAGMENTED_MP4,
-      fragmentLength: config.recording.fragmentMs,
-    },
+    audioCodec: { type: AudioRecordingCodecType.AAC_LC,
+      samplerate: AudioRecordingSamplerate.KHZ_48, bitrate: 24, audioChannels: 1 },
+    mediaContainerConfiguration: { type: MediaContainerType.FRAGMENTED_MP4,
+      fragmentLength: config.recording.fragmentMs },
   };
-}
-
-function h264LevelForPixels(width, height) {
-  const pixels = width * height;
-  if (pixels >= 3840 * 2160) {
-    return H264_LEVEL_5_1;
-  }
-  if (pixels >= 2560 * 1440) {
-    return H264_LEVEL_5_0;
-  }
-  return H264Level.LEVEL4_0;
 }
 
 async function runPrebufferSelfTest(config) {
@@ -1277,7 +1284,7 @@ async function runPrebufferSelfTest(config) {
   }
 }
 
-class MP4Prebuffer {
+export class MP4Prebuffer {
   constructor(config, recordingConfiguration, audioActive = false) {
     this.config = config;
     this.recordingConfiguration = recordingConfiguration;
@@ -1311,12 +1318,11 @@ class MP4Prebuffer {
 
     const args = recordingFFmpegArgs(this.config, this.recordingConfiguration, "pipe:1", this.audioActive);
     const recRes = this.recordingConfiguration.videoCodec.resolution;
-    const recNative = recRes[0] === this.config.video.width
-      && recRes[1] === this.config.video.height
-      && this.config.sourceVideoCodec === "h264";
     log("info", "hsv", `starting recording prebuffer ffmpeg`, {
       resolution: `${recRes[0]}x${recRes[1]}@${recRes[2]}`,
-      mode: recNative ? "copy (native, full quality)" : "transcode/scale",
+      output: recordingPlan(this.config, this.recordingConfiguration),
+      negotiatedBitrateKbps: this.recordingConfiguration.videoCodec.parameters.bitRate,
+      source: this.config.sourceVideo,
       audio: this.audioActive ? "on" : "off",
     });
     const child = spawn(this.config.ffmpegPath, args, {
@@ -1331,10 +1337,12 @@ class MP4Prebuffer {
       this.lastDataAt = Date.now();
       this.handleData(data);
     });
+    let stderrTail = "";
     child.stderr.on("data", (data) => {
+      stderrTail = (stderrTail + data.toString("utf8")).slice(-2000);
       const text = data.toString("utf8").trim();
       if (process.env.HOMELENS_FFMPEG_DEBUG === "1" && text) {
-        log("debug", "ffmpeg-hsv-prebuffer", text);
+        log("debug", "ffmpeg-hsv-prebuffer", sanitizeForLog(text));
       }
     });
     child.on("error", (error) => {
@@ -1351,6 +1359,7 @@ class MP4Prebuffer {
         return;
       }
       log(code === 0 || signal ? "info" : "warning", "hsv", `recording prebuffer ffmpeg exited code=${code} signal=${signal}`);
+      if (code && stderrTail) log("warning", "hsv", sanitizeForLog(stderrTail));
       this.scheduleRestart();
     });
   }
@@ -1383,6 +1392,11 @@ class MP4Prebuffer {
     if (this.destroyed || this.restartTimer) {
       return;
     }
+    // Readers already received the old moov. End them before any new encoder
+    // emits a different initialization segment / resets timestamps.
+    this.events.emit("closed");
+    this.initSegment = undefined;
+    this.fragments = [];
     const delay = Math.min(30_000, 1_000 * (2 ** Math.min(this.restartAttempt, 5)));
     this.restartAttempt += 1;
     log("info", "hsv", `recording prebuffer restart in ${delay}ms`);
@@ -1530,8 +1544,10 @@ class MP4Prebuffer {
 
   createReader() {
     const queue = [];
+    let closed = false;
     let resolveWaiter;
     const onFragment = (fragment) => {
+      if (closed) return;
       queue.push(fragment);
       if (resolveWaiter) {
         const resolve = resolveWaiter;
@@ -1543,6 +1559,8 @@ class MP4Prebuffer {
     // pending waiter so next() returns undefined immediately instead of hanging
     // until its timeout (which would stall the in-flight recording up to maxUntil).
     const onClosed = () => {
+      closed = true;
+      queue.length = 0;
       if (resolveWaiter) {
         const resolve = resolveWaiter;
         resolveWaiter = undefined;
@@ -1556,6 +1574,7 @@ class MP4Prebuffer {
       initSegment: this.initSegment,
       bufferedFragments: [...this.fragments],
       next: (timeoutMs, signal) => {
+        if (closed || this.destroyed) return Promise.resolve(undefined);
         if (queue.length) {
           return Promise.resolve(queue.shift());
         }
@@ -1579,6 +1598,7 @@ class MP4Prebuffer {
         });
       },
       close: () => {
+        closed = true;
         this.events.removeListener("fragment", onFragment);
         this.events.removeListener("closed", onClosed);
         if (resolveWaiter) {
@@ -1653,109 +1673,6 @@ class MP4Prebuffer {
   }
 }
 
-class MP4FragmentServer {
-  constructor(config, recordingConfiguration, audioActive = false) {
-    this.config = config;
-    this.recordingConfiguration = recordingConfiguration;
-    this.audioActive = audioActive;
-    this.server = createServer(this.handleConnection.bind(this));
-    this.socket = undefined;
-    this.childProcess = undefined;
-    this.destroyed = false;
-    this.connected = new Promise((resolve) => {
-      this.resolveConnected = resolve;
-    });
-  }
-
-  async start() {
-    this.server.listen(0, "127.0.0.1");
-    await once(this.server, "listening");
-    if (this.destroyed) {
-      return;
-    }
-
-    const port = this.server.address().port;
-    const args = this.ffmpegArgs(`tcp://127.0.0.1:${port}`);
-    log("info", "hsv", "starting recording ffmpeg");
-    this.childProcess = spawn(this.config.ffmpegPath, args, {
-      env: process.env,
-      stdio: process.env.HOMELENS_FFMPEG_DEBUG === "1" ? ["ignore", "ignore", "pipe"] : "ignore",
-    });
-    this.childProcess?.stderr?.on("data", (data) => log("debug", "ffmpeg-hsv", data.toString("utf8").trim()));
-    this.childProcess?.on("exit", (code, signal) => {
-      if (!this.destroyed) {
-        log(code === 0 || signal ? "info" : "warning", "hsv", `recording ffmpeg exited code=${code} signal=${signal}`);
-      }
-    });
-  }
-
-  ffmpegArgs(outputURL) {
-    return recordingFFmpegArgs(this.config, this.recordingConfiguration, outputURL, this.audioActive);
-  }
-
-  handleConnection(socket) {
-    this.server.close();
-    this.socket = socket;
-    this.resolveConnected();
-  }
-
-  async *generator() {
-    await this.connected;
-    while (!this.destroyed) {
-      const header = await this.read(8);
-      const length = header.readUInt32BE(0) - 8;
-      const type = header.subarray(4).toString("ascii");
-      const data = await this.read(length);
-      yield { header, length, type, data };
-    }
-  }
-
-  async read(length) {
-    if (!this.socket) {
-      throw new Error("recording socket is closed");
-    }
-    if (length === 0) {
-      return Buffer.alloc(0);
-    }
-
-    const available = this.socket.read(length);
-    if (available) {
-      return available;
-    }
-
-    return new Promise((resolve, reject) => {
-      const readable = () => {
-        const value = this.socket?.read(length);
-        if (value) {
-          cleanup();
-          resolve(value);
-        }
-      };
-      const closed = () => {
-        cleanup();
-        reject(new Error("recording socket closed"));
-      };
-      const cleanup = () => {
-        this.socket?.removeListener("readable", readable);
-        this.socket?.removeListener("close", closed);
-        this.socket?.removeListener("end", closed);
-      };
-      this.socket.on("readable", readable);
-      this.socket.on("close", closed);
-      this.socket.on("end", closed);
-    });
-  }
-
-  destroy() {
-    this.destroyed = true;
-    this.socket?.destroy();
-    this.server.close();
-    this.childProcess?.kill("SIGTERM");
-    this.socket = undefined;
-    this.childProcess = undefined;
-  }
-}
-
 function createAccessory(config) {
   mkdirSync(config.storagePath, { recursive: true });
   HAPStorage.setCustomStoragePath(config.storagePath);
@@ -1819,7 +1736,7 @@ function createAccessory(config) {
         video: {
           type: VideoCodecType.H264,
           parameters: {
-            profiles: [H264Profile.MAIN, H264Profile.HIGH],
+            profiles: [H264Profile.HIGH, H264Profile.MAIN],
             levels: recordingLevels,
           },
           resolutions: recordingResolutions,
@@ -1840,6 +1757,14 @@ function createAccessory(config) {
   const controller = new CameraController(controllerOptions);
   delegate.controller = controller;
   accessory.configureController(controller);
+  controller.recordingManagement?.recordingManagementService
+    .getCharacteristic(Characteristic.RecordingAudioActive).on("change", () => {
+      // The management characteristic setter updates recordingAudioActive first.
+      setImmediate(() => {
+        delegate.stopRecordingPrebuffer();
+        delegate.ensureRecordingPrebuffer();
+      });
+    });
   log("info", "hap", "video capabilities", {
     qualityMode: config.video.qualityMode,
     sources: config.rtspSubUrl ? ["main", "sub"] : ["main"],
@@ -1851,21 +1776,29 @@ function createAccessory(config) {
 
   const motionService = controller.motionService ?? accessory.getService(Service.MotionSensor);
   delegate.isMotionActive = () => Boolean(motionService?.getCharacteristic(Characteristic.MotionDetected).value);
-  return { accessory, controller, motionService };
+  return { accessory, controller, motionService, delegate };
 }
 
 async function main() {
   const config = loadConfig();
-  config.sourceVideoCodec = probeVideoCodec(config);
-  log("info", "stream", `camera main video codec: ${config.sourceVideoCodec}`, {
-    mode: config.sourceVideoCodec === "h264" ? "copy-capable (H.264)" : "transcode-to-H.264 (HomeKit needs H.264)",
+  config.sourceVideo = await probeVideoSource(config);
+  log(config.sourceVideo ? "info" : "warning", "stream", "camera main stream probe", {
+    source: config.sourceVideo || "unknown; using conservative HomeKit capabilities",
+    recordingQuality: config.recording.quality,
+    recordingTransport: "legacy HDS (native 4K/HEVC requires iOS/tvOS 27)",
   });
+  config.sourceSubVideo = config.rtspSubUrl
+    ? await probeVideoSource({ ...config, rtspUrl: config.rtspSubUrl }) : undefined;
+  if (config.sourceSubVideo) log("info", "stream", "camera sub stream probe", { source: config.sourceSubVideo });
+  if (config.recording.quality === "native" && !config.sourceVideo) {
+    throw new Error("Cannot identify the main stream for native recording; retrying instead of silently reducing quality.");
+  }
   if (process.env.HOMELENS_PREBUFFER_SELF_TEST === "1") {
     await runPrebufferSelfTest(config);
     return;
   }
 
-  const { accessory, motionService } = createAccessory(config);
+  const { accessory, motionService, delegate } = createAccessory(config);
 
   const publishInfo = {
     username: config.username,
@@ -1910,6 +1843,8 @@ async function main() {
 
   const shutdown = async (signal) => {
     log("info", "process", `received ${signal}, shutting down`);
+    delegate.stopRecordingPrebuffer();
+    for (const sessionID of delegate.ongoingSessions.keys()) delegate.stopStream(sessionID, "shutdown");
     await accessory.unpublish();
     process.exit(0);
   };
@@ -1917,7 +1852,9 @@ async function main() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-main().catch((error) => {
-  log("error", "process", error.stack || error.message);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch((error) => {
+    log("error", "process", sanitizeForLog(error.stack || error.message));
+    process.exitCode = 1;
+  });
+}

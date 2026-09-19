@@ -11,7 +11,7 @@ final class AppModel: ObservableObject {
     @Published var rtspResult: ServiceTestResult?
     @Published var onvifResult: ServiceTestResult?
     @Published var previewFrame: CameraPreviewFrame?
-    @Published var previewProfile: CameraPreviewProfile = .sub
+    @Published var previewProfile: CameraPreviewProfile = .main
     @Published var isPreviewLoading = false
     @Published var previewError: String?
     @Published var importCandidates: [ScryptedImportCandidate] = []

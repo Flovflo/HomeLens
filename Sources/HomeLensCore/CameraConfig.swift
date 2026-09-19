@@ -16,6 +16,8 @@ public struct CameraConfig: Codable, Equatable, Sendable {
     public var onvifPort: Int
     public var streamProfile: StreamProfile
     public var passwordStored: Bool
+    /// nil preserves legacy negotiated recording quality; "native" requires Home 27.
+    public var recordingQuality: String?
     /// Optional macOS network interface name (e.g. "en0") the HomeKit bridge
     /// should publish on. nil/empty = automatic (all interfaces).
     public var networkInterface: String?
@@ -29,9 +31,10 @@ public struct CameraConfig: Codable, Equatable, Sendable {
         rtspSubPath: String = "/h264Preview_01_sub",
         onvifPath: String = "/onvif/device_service",
         onvifPort: Int = 8000,
-        streamProfile: StreamProfile = .sub,
+        streamProfile: StreamProfile = .main,
         passwordStored: Bool = false,
-        networkInterface: String? = nil
+        networkInterface: String? = nil,
+        recordingQuality: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -44,6 +47,7 @@ public struct CameraConfig: Codable, Equatable, Sendable {
         self.streamProfile = streamProfile
         self.passwordStored = passwordStored
         self.networkInterface = networkInterface
+        self.recordingQuality = recordingQuality
     }
 
     public var selectedRTSPPath: String {

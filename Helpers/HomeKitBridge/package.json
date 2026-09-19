@@ -6,7 +6,9 @@
   "description": "Minimal HomeLens HAP helper for one Reolink RTSP/ONVIF camera.",
   "scripts": {
     "start": "node src/index.mjs",
-    "check": "node --check src/index.mjs"
+    "check": "node --check src/index.mjs",
+    "test": "node --test test/video.test.mjs",
+    "test:media": "node test/media-integration.mjs"
   },
   "dependencies": {
     "@homebridge/hap-nodejs": "2.1.7"

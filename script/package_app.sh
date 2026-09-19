@@ -21,7 +21,11 @@ cp "$ROOT/Assets/HomeLens.icns" "$RESOURCES/HomeLens.icns"
 mkdir -p "$RESOURCES/Helpers"
 rsync -a "$ROOT/Helpers/HomeKitBridge" "$RESOURCES/Helpers/"
 
-cat > "$CONTENTS/Info.plist" <<'PLIST'
+# Marketing version comes from release.sh (HOMELENS_VERSION=x.y.z); the build
+# number is the commit count so every build is distinguishable.
+VERSION="${HOMELENS_VERSION:-2.0.0}"
+BUILD="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
+cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -39,9 +43,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$BUILD</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>

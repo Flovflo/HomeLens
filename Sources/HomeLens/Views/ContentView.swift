@@ -219,7 +219,7 @@ private struct LivePanel: View {
                 HStack {
                     Label(captionText, systemImage: captionIcon)
                     Spacer()
-                    Text(model.previewProfile == .sub ? "Flux sub · faible latence" : "Flux principal · pleine qualité")
+                    Text(live.sourceDescription.isEmpty ? "Connexion à la caméra" : live.sourceDescription)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -465,8 +465,8 @@ private struct StreamPolicy: View {
                     .frame(width: 210, alignment: .leading)
 
                 PolicyColumn(title: "Aperçu rapide", value: "Flux sub", detail: "360p · faible latence")
-                PolicyColumn(title: "Live HomeKit", value: "Flux main", detail: "jusqu’à 4K + audio")
-                PolicyColumn(title: "Enregistrement", value: "HSV", detail: "fMP4 + audio AAC")
+                PolicyColumn(title: "Live HomeKit", value: "Flux main", detail: "H.264 · résolution négociée")
+                PolicyColumn(title: "Enregistrement", value: "HSV", detail: camera?.recordingQuality == "native" ? "Qualité originale · jusqu’à 4K" : "Qualité négociée par Maison")
                 PolicyColumn(title: "Chemins", value: camera?.rtspMainPath ?? "/h264Preview_01_main", detail: camera?.rtspSubPath ?? "/h264Preview_01_sub")
             }
         }
@@ -521,6 +521,14 @@ private struct CameraSettings: View {
                                         .frame(width: 58, alignment: .trailing)
                                 }
                             }
+                        }
+                        GridRow {
+                            FieldTitle("Enregistrement Maison")
+                            Picker("Qualité", selection: binding(for: camera.recordingQuality ?? "compatible") { $0.recordingQuality = $1 }) {
+                                Text("Originale / 4K — iOS et concentrateurs 27").tag("native")
+                                Text("Compatible — qualité négociée par Maison").tag("compatible")
+                            }
+                            .labelsHidden()
                         }
                         GridRow {
                             FieldTitle("Carte réseau")

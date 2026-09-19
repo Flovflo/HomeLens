@@ -24,8 +24,9 @@ IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"
 [[ -n "$IDENTITY" ]] || { echo "No 'Developer ID Application' identity. See docs/RELEASING.md"; exit 1; }
 command -v gh >/dev/null || { echo "gh CLI required"; exit 1; }
 
-echo "==> [1/5] Building the self-contained app"
-./script/package_app.sh
+echo "==> [1/5] Building the self-contained app ($VERSION)"
+./script/make_icon.sh
+HOMELENS_VERSION="${VERSION#v}" ./script/package_app.sh
 
 echo "==> [2/5] Signing + notarizing + stapling the app"
 NOTARY_PROFILE="$PROFILE" SIGN_IDENTITY="$IDENTITY" ./script/sign_and_notarize.sh "$APP"
@@ -44,7 +45,7 @@ NOTES="$(mktemp)"
 cat > "$NOTES" <<EOF
 ## HomeLens $VERSION
 
-Mettez votre caméra **Reolink** dans l'app **Maison** d'Apple — vidéo en direct avec audio + **HomeKit Secure Video**, jusqu'à la 4K.
+Mettez votre caméra **Reolink** dans l'app **Maison** d'Apple — vidéo en direct avec audio + **HomeKit Secure Video**, en qualité originale jusqu'à la 4K (iOS/tvOS 27).
 
 ### Installation
 1. Téléchargez **HomeLens.dmg** ci-dessous.
