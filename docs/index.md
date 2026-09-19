@@ -9,6 +9,8 @@ description: Free, open-source macOS app that bridges a Reolink camera into Appl
 
 **Your Reolink camera in Apple Home — true 4K live view and 4K HomeKit Secure Video recordings — from a tiny native macOS app.**
 
+**100% open source (MIT) · built for Apple: Swift, SwiftUI, VideoToolbox, Apple Silicon · no cloud, no account, no telemetry**
+
 [**⬇ Download HomeLens.dmg**](https://github.com/Flovflo/HomeLens/releases/latest) · [Source on GitHub](https://github.com/Flovflo/HomeLens) · macOS 14+ · Apple Silicon · signed & notarized · MIT
 
 ## Why
@@ -22,6 +24,10 @@ Apple Home cannot add an RTSP/ONVIF camera by itself, and the usual bridges (Scr
 - **Smooth playback**: Reolink cameras stream in bursts with erratic timestamps; HomeLens re-times and paces the packets.
 - **Nothing to install**: ffmpeg and Node.js are inside the app. Download, drag to Applications, follow the wizard, pair with the Home app.
 - **Diagnostics** that show exactly where the chain breaks: camera → bridge → network → Apple Home.
+
+## Open source, optimized for Apple
+
+Everything is in the [GitHub repository](https://github.com/Flovflo/HomeLens) under the MIT license: the SwiftUI app, the `homelensctl` CLI, the HomeKit helper and the release pipeline. Video encoding, when needed, runs on the Apple Silicon media engine through VideoToolbox; original-quality 4K paths do no encoding at all. Your camera password lives in the macOS Keychain and nothing leaves your network except what Apple Home itself encrypts.
 
 ## Install
 

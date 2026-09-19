@@ -6,6 +6,8 @@
 
 ### Your Reolink camera in Apple Home — **true 4K live view and 4K HomeKit Secure Video recordings** — from a tiny native macOS app.
 
+**100% open source (MIT) · built for Apple: Swift 6, SwiftUI, VideoToolbox, AVFoundation, Apple Silicon**
+
 [![4K](https://img.shields.io/badge/4K-3840%C3%972160%20original%20stream-1d4ed8?style=flat-square)](#-4k-end-to-end)
 [![H.264 / HEVC](https://img.shields.io/badge/codec-H.264%20%7C%20HEVC%20passthrough-1d4ed8?style=flat-square)](#-4k-end-to-end)
 [![HKSV](https://img.shields.io/badge/HomeKit%20Secure%20Video-iOS%2027-1d4ed8?style=flat-square)](#-4k-end-to-end)
@@ -16,6 +18,7 @@
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange?logo=swift)](https://swift.org)
 [![HomeKit](https://img.shields.io/badge/HomeKit-Secure%20Video-blue?logo=apple)](https://developer.apple.com/apple-home/)
 [![Notarized](https://img.shields.io/badge/Apple-notarized-success?logo=apple)](https://github.com/Flovflo/HomeLens/releases/latest)
+[![Open Source](https://img.shields.io/badge/100%25-open%20source-success?style=flat-square&logo=github)](LICENSE)
 [![License](https://img.shields.io/github/license/Flovflo/HomeLens)](LICENSE)
 [![Downloads](https://img.shields.io/github/downloads/Flovflo/HomeLens/total?color=1d4ed8)](https://github.com/Flovflo/HomeLens/releases)
 
@@ -46,6 +49,12 @@ Apple's `HomeKit.framework` can **control** accessories — but it **cannot publ
 
 ---
 
+## 🍎 Open source, built for Apple
+
+- **Fully open source, MIT licensed.** Every line — the Swift app, the CLI, the HomeKit helper, the build and release scripts — is in this repository. No telemetry, no account, no cloud: your video goes from the camera to Apple Home on your own network, and HomeKit Secure Video clips are encrypted by Apple end to end.
+- **Optimized for Apple hardware.** Swift 6 and SwiftUI throughout; video encoding, when needed, runs on the **Apple Silicon media engine** (VideoToolbox), and the macOS preview decodes 4K with AVFoundation. Original-quality paths do no encoding at all, so the Mac stays cool and quiet.
+- **Native by design.** Secrets in the macOS Keychain, a `launchd` service for 24/7 reliability, Bonjour discovery, and a signed, notarized app: it behaves like a Mac app should.
+
 ## 📐 4K end to end
 
 Most HomeKit bridges re-encode your camera to 1080p (or less) before Apple Home ever sees it. HomeLens sends the **camera's original stream**:
@@ -70,6 +79,8 @@ Verified on a Reolink **CX810** (4K, 6 Mbit/s): recordings are stored at 3840 ×
 | 4K / HEVC HSV recordings | ✅ original stream | ✅ (NVR) | ❌ |
 | Reolink burst/jitter fix | ✅ re-timed + paced RTP | partial | ❌ |
 | Native macOS app + diagnostics | ✅ | web UI | web UI |
+| Open source | ✅ MIT, all of it | core open, NVR paid | ✅ |
+| Apple Silicon hardware encode (VideoToolbox) | ✅ | ✅ | via ffmpeg flags |
 | Runs without a browser or Docker | ✅ launchd agent | ❌ | ❌ |
 
 ---
