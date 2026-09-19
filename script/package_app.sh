@@ -23,7 +23,7 @@ rsync -a "$ROOT/Helpers/HomeKitBridge" "$RESOURCES/Helpers/"
 
 # Marketing version comes from release.sh (HOMELENS_VERSION=x.y.z); the build
 # number is the commit count so every build is distinguishable.
-VERSION="${HOMELENS_VERSION:-0.2.0}"
+VERSION="${HOMELENS_VERSION:-2.0.0}"
 BUILD="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
